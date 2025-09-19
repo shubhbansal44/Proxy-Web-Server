@@ -72,32 +72,33 @@ int CACHE_SIZE;
 
 int ConnectEndServer(void *hostname, int port)
 {
-
-  // Actual socket as available on internet for connecting to end server.
   int END_SERVER_SOCKET = socket(AF_INET, SOCK_STREAM, 0);
   if (END_SERVER_SOCKET < 0)
   {
-    printf("Error occured while creating end server socket!\n");
+    fprintf(stderr, "ConnectEndServer: Something went wrong while inializing end server socket!\n");
     return -1;
   }
 
   struct hostent *HOST = gethostbyname((const char *)hostname);
   if (HOST == NULL)
   {
-    printf("No such host exists!\n");
+    fprintf(stderr, "ConnectEndServer: No such host exists: %s\n", (char *)hostname);
+    close(END_SERVER_SOCKET);
     return -1;
   }
 
-  // end server socket's address.
   struct sockaddr_in END_SERVER_ADDR;
-  memset((char *)&END_SERVER_ADDR, 0, sizeof(END_SERVER_ADDR));
+  memset(&END_SERVER_ADDR, 0, sizeof(END_SERVER_ADDR));
   END_SERVER_ADDR.sin_family = AF_INET;
   END_SERVER_ADDR.sin_port = htons(port);
-  bcopy((char *)&hostname, (char *)&END_SERVER_ADDR.sin_addr.s_addr, HOST->h_length);
 
-  if (connect(END_SERVER_SOCKET, (const struct sockaddr *)&END_SERVER_ADDR, (socklen_t)sizeof(END_SERVER_ADDR)) < 0)
+  /* copy first resolved address into sin_addr */
+  memcpy(&END_SERVER_ADDR.sin_addr, HOST->h_addr_list[0], HOST->h_length);
+
+  if (connect(END_SERVER_SOCKET, (struct sockaddr *)&END_SERVER_ADDR, sizeof(END_SERVER_ADDR)) < 0)
   {
-    printf("Something went wrong while connecting to end server!\n");
+    fprintf(stderr, "ConnectEndServer: connect to end server failed");
+    close(END_SERVER_SOCKET);
     return -1;
   }
 
@@ -116,20 +117,20 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
 
   if (ParsedHeader_set(CLIENT_PARSED_REQUEST, "Connection", "close") < 0)
   {
-    printf("Error occured While Establising Parsed request connection!\n");
+    fprintf(stderr, "HandleRequest: Error occured While Establising Parsed request connection!\n");
   }
 
   if (ParsedHeader_get(CLIENT_PARSED_REQUEST, "Host") == NULL)
   {
     if (ParsedHeader_set(CLIENT_PARSED_REQUEST, "Host", CLIENT_PARSED_REQUEST->host) < 0)
     {
-      printf("Error occured while setting host in Parsed Request header!\n");
+      fprintf(stderr, "HandleRequest: Error occured while setting host in Parsed Request header!\n");
     }
   }
 
   if (ParsedRequest_unparse_headers(CLIENT_PARSED_REQUEST, BUFFER + LENGTH, (size_t)MAX_BYTES - LENGTH) < 0)
   {
-    printf("Error occured while unparsing headers!\n");
+    fprintf(stderr, "HandleRequest: Error occured while unparsing headers!\n");
   }
 
   int END_SERVER_PORT = 80;
@@ -141,43 +142,72 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
   int END_SERVER_SOCKET_ID = ConnectEndServer(CLIENT_PARSED_REQUEST->host, END_SERVER_PORT);
   if (END_SERVER_SOCKET_ID < 0)
   {
-    printf("Error occured while creating end server socket ID!\n");
+    fprintf(stderr, "HandleRequest: Error occured while creating end server socket ID!\n");
     return -1;
   }
 
-  int BYTES_RECIEVED = send(END_SERVER_SOCKET_ID, BUFFER, strlen(BUFFER), 0);
-
-  bzero(BUFFER, MAX_BYTES);
-  BYTES_RECIEVED = recv(END_SERVER_SOCKET_ID, BUFFER, MAX_BYTES - 1, 0);
-
-  char *RESPONSE = (char *)malloc(MAX_BYTES * sizeof(char));
-  bzero(RESPONSE, MAX_BYTES);
-  int SIZE = MAX_BYTES;
-  int POS = 0;
-
-  while (BYTES_RECIEVED > 0)
+  /* send request to end server */
+  ssize_t BYTES_SEND = send(END_SERVER_SOCKET_ID, BUFFER, strlen(BUFFER), 0);
+  if (BYTES_SEND < 0)
   {
-    BYTES_RECIEVED = send(CLIENT_SOCKET_ID, BUFFER, BYTES_RECIEVED, 0);
-    for (int i = 0; strlen(BUFFER) / sizeof(char); i++)
+    fprintf(stderr, "HandleRequest: sending request to end server failed");
+    close(END_SERVER_SOCKET_ID);
+    return -1;
+  }
+
+  /* Receive from end server and stream to client; also build RESPONSE for caching */
+  char *RESPONSE = (char *)malloc(MAX_BYTES);
+  if (!RESPONSE)
+  {
+    close(END_SERVER_SOCKET_ID);
+    return -1;
+  }
+  size_t RESPONSE_CAPACITY = MAX_BYTES;
+  size_t RESPONSE_LENGTH = 0;
+
+  ssize_t BYTES_RECEIVED;
+  while ((BYTES_RECEIVED = recv(END_SERVER_SOCKET_ID, BUFFER, MAX_BYTES, 0)) > 0)
+  {
+    ssize_t BYTES_SEND_CLIENT = send(CLIENT_SOCKET_ID, BUFFER, BYTES_RECEIVED, 0);
+    if (BYTES_SEND_CLIENT < 0)
     {
-      RESPONSE[POS] = BUFFER[i];
-      POS++;
-    }
-    SIZE += MAX_BYTES;
-    RESPONSE = (char *)realloc(RESPONSE, SIZE);
-    if (BYTES_RECIEVED < 0)
-    {
-      printf("Error occured while sending data to the client");
+      fprintf(stderr, "HandleRequest: send to client failed");
       break;
     }
-    bzero(BUFFER, MAX_BYTES);
-    BYTES_RECIEVED = recv(END_SERVER_SOCKET_ID, BUFFER, MAX_BYTES - 1, 0);
+    /* append to RESPONSE buffer */
+    if (RESPONSE_LENGTH + (size_t)BYTES_RECEIVED + 1 > RESPONSE_CAPACITY)
+    {
+      RESPONSE_CAPACITY *= 2;
+      char *TEMP = (char *)realloc(RESPONSE, RESPONSE_CAPACITY);
+      if (!TEMP)
+      {
+        fprintf(stderr, "HandleRequest: realloc failed");
+        break;
+      }
+      RESPONSE = TEMP;
+    }
+    memcpy(RESPONSE + RESPONSE_LENGTH, BUFFER, BYTES_RECEIVED);
+    RESPONSE_LENGTH += BYTES_RECEIVED;
   }
-  RESPONSE[POS] = '\0';
+
+  if (BYTES_RECEIVED < 0)
+    fprintf(stderr, "HandleRequest: recv from end server failed");
+
+  /* null-terminate for safety */
+  if (RESPONSE_LENGTH + 1 > RESPONSE_CAPACITY)
+  {
+    char *TEMP = (char *)realloc(RESPONSE, RESPONSE_LENGTH + 1);
+    if (TEMP)
+      RESPONSE = TEMP;
+  }
+  RESPONSE[RESPONSE_LENGTH] = '\0';
+
+  /* Attempt caching (use the original request string as key) */
+  AddCache(RESPONSE, RESPONSE_LENGTH, CLIENT_REQUEST);
+
   free(BUFFER);
-  AddCache(RESPONSE, strlen(RESPONSE), CLIENT_REQUEST);
   free(RESPONSE);
-  close(CLIENT_SOCKET_ID);
+  close(END_SERVER_SOCKET_ID);
 
   return 0;
 }
@@ -310,13 +340,7 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
   {
     LENGTH = strlen(BUFFER);
     struct ParsedRequest *PARSED_REQUEST = ParsedRequest_create();
-    // printf("host & protocol\n");
-    // printf(PARSED_REQUEST->host, PARSED_REQUEST->protocol);
-    
-    printf("printing request buffer\n");
-    printf(BUFFER);
-    printf("\n");
-    
+
     if (ParsedRequest_parse(PARSED_REQUEST, BUFFER, LENGTH) < 0)
     {
       printf("Parsing failed!\n");
@@ -331,13 +355,11 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
           BYTES_RECIEVED = HandleRequest(SOCKET, PARSED_REQUEST, REQUEST);
           if (BYTES_RECIEVED == -1)
           {
-            printf("sheep 1\n");
             ThrowError(SOCKET, 500);
           }
         }
         else
         {
-          printf("sheep 2\n");
           ThrowError(SOCKET, 500);
         }
       }
@@ -413,8 +435,13 @@ int AddCache(char *DATA, int SIZE, char *URL)
     }
     CacheModule *CACHE = (CacheModule *)malloc(sizeof(CacheModule));
     CACHE->DATA = (char *)malloc(SIZE + 1);
-    strcpy(CACHE->DATA, DATA);
-    CACHE->URL = (char *)malloc(strlen(URL) * sizeof(char));
+    if (!CACHE->DATA)
+    {
+      fprintf(stderr, "Something went wrong while allocating cache data!\n");
+    }
+    memcpy(CACHE->DATA, DATA, SIZE);
+    CACHE->DATA[SIZE] = '\0';
+    CACHE->URL = (char *)malloc(strlen(URL) + 1);
     strcpy(CACHE->URL, URL);
     CACHE->UPTIME = time(NULL);
     CACHE->NEXT = HEAD;
@@ -430,37 +457,43 @@ int AddCache(char *DATA, int SIZE, char *URL)
 
 void RemoveCache()
 {
-  CacheModule *PREV_CACHE;
-  CacheModule *CURRENT_CACHE;
-  CacheModule *NEXT_CACHE;
-
-  int CURRENT_LOCK_VALUE = pthread_mutex_lock(&LOCK);
-  printf("Lock acquired %d\n", CURRENT_LOCK_VALUE);
-  if (HEAD != NULL)
+  pthread_mutex_lock(&LOCK);
+  if (!HEAD)
   {
-    for (PREV_CACHE = HEAD, CURRENT_CACHE = HEAD, NEXT_CACHE = HEAD; NEXT_CACHE != NULL; NEXT_CACHE = NEXT_CACHE->NEXT)
-    {
-      if (NEXT_CACHE->NEXT->UPTIME < CURRENT_CACHE->UPTIME)
-      {
-        CURRENT_CACHE = NEXT_CACHE->NEXT;
-        PREV_CACHE = NEXT_CACHE;
-      }
-    }
-    if (CURRENT_CACHE == HEAD)
-    {
-      HEAD = HEAD->NEXT;
-    }
-    else
-    {
-      PREV_CACHE->NEXT = CURRENT_CACHE->NEXT;
-    }
-    CACHE_SIZE -= (sizeof(CacheModule) + strlen(CURRENT_CACHE->URL) + CURRENT_CACHE->LENGTH + 1);
-    free(CURRENT_CACHE->DATA);
-    free(CURRENT_CACHE->URL);
-    free(CURRENT_CACHE);
+    pthread_mutex_unlock(&LOCK);
+    return;
   }
-  CURRENT_LOCK_VALUE = pthread_mutex_unlock(&LOCK);
-  printf("Lock released %d\n", CURRENT_LOCK_VALUE);
+
+  CacheModule *prev = NULL;
+  CacheModule *cur = HEAD;
+  CacheModule *lru_prev = NULL;
+  CacheModule *lru = HEAD;
+
+  while (cur)
+  {
+    if (cur->UPTIME < lru->UPTIME)
+    {
+      lru = cur;
+      lru_prev = prev;
+    }
+    prev = cur;
+    cur = cur->NEXT;
+  }
+
+  if (lru == HEAD)
+  {
+    HEAD = HEAD->NEXT;
+  }
+  else
+  {
+    lru_prev->NEXT = lru->NEXT;
+  }
+
+  CACHE_SIZE -= (sizeof(CacheModule) + strlen(lru->URL) + lru->LENGTH + 1);
+  free(lru->DATA);
+  free(lru->URL);
+  free(lru);
+  pthread_mutex_unlock(&LOCK);
 }
 
 int main(int argc, char *argv[])
