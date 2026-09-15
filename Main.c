@@ -295,7 +295,7 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
   int BYTES_RECIEVED, LENGTH;
 
   char *BUFFER = (char *)calloc(MAX_BYTES, sizeof(char));
-  bzero(BUFFER, MAX_BYTES);
+  memset(BUFFER, 0, MAX_BYTES);
 
   BYTES_RECIEVED = recv(SOCKET, BUFFER, MAX_BYTES, 0);
   while (BYTES_RECIEVED > 0)
@@ -325,7 +325,7 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
     char RESPONSE[MAX_BYTES];
     while (POS < SIZE)
     {
-      bzero(RESPONSE, MAX_BYTES);
+      memset(RESPONSE, 0, MAX_BYTES);
       for (int i = 0; i < MAX_BYTES; i++)
       {
         RESPONSE[i] = CACHE->DATA[POS];
@@ -347,7 +347,7 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
     }
     else
     {
-      bzero(BUFFER, MAX_BYTES);
+      memset(BUFFER, 0, MAX_BYTES);
       if (!strcmp(PARSED_REQUEST->method, "GET"))
       {
         if (PARSED_REQUEST->host && PARSED_REQUEST->path && checkHTTPversion(PARSED_REQUEST->version) == 1)
@@ -530,7 +530,7 @@ int main(int argc, char *argv[])
     printf("Execution failed while setting Socket option(setsockopt)!\n");
   }
 
-  bzero((char *)&SERVER_ADDR, sizeof(SERVER_ADDR));
+  memset((char *)&SERVER_ADDR, 0, sizeof(SERVER_ADDR));
   SERVER_ADDR.sin_family = AF_INET;
   SERVER_ADDR.sin_port = htons(PORT_NUMBER);
   SERVER_ADDR.sin_addr.s_addr = INADDR_ANY;
@@ -555,7 +555,7 @@ int main(int argc, char *argv[])
 
   while (1)
   {
-    bzero((char *)&CLIENT_ADDR, sizeof(CLIENT_ADDR));
+    memset((char *)&CLIENT_ADDR, 0, sizeof(CLIENT_ADDR));
     CLIENT_LENGTH = sizeof(CLIENT_ADDR);
     CLIENT_SOCKET_ID = accept(PROXY_SOCKET_ID, (struct sockaddr *)&CLIENT_ADDR,
                               (socklen_t *)&CLIENT_LENGTH);
@@ -583,4 +583,3 @@ int main(int argc, char *argv[])
   }
   close(PROXY_SOCKET_ID);
   return 0;
-}
