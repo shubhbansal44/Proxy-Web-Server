@@ -1,4 +1,5 @@
 #include "proxy_parse.h"
+#include "config.h"
 #include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <bits/time.h>
@@ -16,18 +17,9 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <ctype.h>
 #include <time.h>
 #include <unistd.h>
-
-// Number of clients/requests a proxy server can handle.
-#define MAX_CLIENTS 10
-
-// Max size of single request.
-#define MAX_BYTES 4096
-
-#define MAX_ELEMENT_SIZE 10 * (1 << 10)
-
-#define MAX_CACHE_SIZE 200 * (1 << 20)
 
 // Cache Module declaration
 // DATA Buffer stores received data,
@@ -50,14 +42,14 @@ int AddCache(char *DATA, int SIZE, char *URL);
 
 void RemoveCache();
 
-// Server's port number
-int PORT_NUMBER = 8080;
+// Global configuration structure
+ProxyConfig g_config;
 
 // Server's socket id
 int PROXY_SOCKET_ID;
 
 // Buffer to store Thread IDs associated with each client's request.
-pthread_t THREAD_ID[MAX_CLIENTS];
+pthread_t *THREAD_ID;
 
 // semaphore lock for handling multiple (MAX CLIENTS) users.
 sem_t SEMAPHORE;
@@ -68,7 +60,7 @@ pthread_mutex_t LOCK;
 // global cache head
 CacheModule *HEAD;
 
-int CACHE_SIZE;
+size_t CACHE_SIZE;
 
 int ConnectEndServer(void *hostname, int port)
 {
@@ -107,7 +99,7 @@ int ConnectEndServer(void *hostname, int port)
 
 int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQUEST, char *CLIENT_REQUEST)
 {
-  char *BUFFER = (char *)malloc(MAX_BYTES * sizeof(char));
+  char *BUFFER = (char *)malloc(g_config.max_bytes * sizeof(char));
   strcpy(BUFFER, "GET ");
   strcat(BUFFER, CLIENT_PARSED_REQUEST->path);
   strcat(BUFFER, " ");
@@ -128,7 +120,7 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
     }
   }
 
-  if (ParsedRequest_unparse_headers(CLIENT_PARSED_REQUEST, BUFFER + LENGTH, (size_t)MAX_BYTES - LENGTH) < 0)
+  if (ParsedRequest_unparse_headers(CLIENT_PARSED_REQUEST, BUFFER + LENGTH, (size_t)g_config.max_bytes - LENGTH) < 0)
   {
     fprintf(stderr, "HandleRequest: Error occured while unparsing headers!\n");
   }
@@ -156,17 +148,17 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
   }
 
   /* Receive from end server and stream to client; also build RESPONSE for caching */
-  char *RESPONSE = (char *)malloc(MAX_BYTES);
+  char *RESPONSE = (char *)malloc(g_config.max_bytes);
   if (!RESPONSE)
   {
     close(END_SERVER_SOCKET_ID);
     return -1;
   }
-  size_t RESPONSE_CAPACITY = MAX_BYTES;
+  size_t RESPONSE_CAPACITY = g_config.max_bytes;
   size_t RESPONSE_LENGTH = 0;
 
   ssize_t BYTES_RECEIVED;
-  while ((BYTES_RECEIVED = recv(END_SERVER_SOCKET_ID, BUFFER, MAX_BYTES, 0)) > 0)
+  while ((BYTES_RECEIVED = recv(END_SERVER_SOCKET_ID, BUFFER, g_config.max_bytes, 0)) > 0)
   {
     ssize_t BYTES_SEND_CLIENT = send(CLIENT_SOCKET_ID, BUFFER, BYTES_RECEIVED, 0);
     if (BYTES_SEND_CLIENT < 0)
@@ -294,16 +286,16 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
   int SOCKET = *NEW_SOCKET_PTR;
   int BYTES_RECIEVED, LENGTH;
 
-  char *BUFFER = (char *)calloc(MAX_BYTES, sizeof(char));
-  memset(BUFFER, 0, MAX_BYTES);
+  char *BUFFER = (char *)calloc(g_config.max_bytes, sizeof(char));
+  memset(BUFFER, 0, g_config.max_bytes);
 
-  BYTES_RECIEVED = recv(SOCKET, BUFFER, MAX_BYTES, 0);
+  BYTES_RECIEVED = recv(SOCKET, BUFFER, g_config.max_bytes, 0);
   while (BYTES_RECIEVED > 0)
   {
     LENGTH = strlen(BUFFER);
     if (strstr(BUFFER, "\r\n\r\n") == NULL)
     {
-      BYTES_RECIEVED = recv(SOCKET, BUFFER + LENGTH, MAX_BYTES - LENGTH, 0);
+      BYTES_RECIEVED = recv(SOCKET, BUFFER + LENGTH, g_config.max_bytes - LENGTH, 0);
     }
     else
     {
@@ -322,16 +314,16 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
   {
     int SIZE = CACHE->LENGTH / sizeof(char);
     int POS = 0;
-    char RESPONSE[MAX_BYTES];
+    char RESPONSE[g_config.max_bytes];
     while (POS < SIZE)
     {
-      memset(RESPONSE, 0, MAX_BYTES);
-      for (int i = 0; i < MAX_BYTES; i++)
+      memset(RESPONSE, 0, g_config.max_bytes);
+      for (size_t i = 0; i < g_config.max_bytes; i++)
       {
         RESPONSE[i] = CACHE->DATA[POS];
         POS++;
       }
-      send(SOCKET, RESPONSE, MAX_BYTES, 0);
+      send(SOCKET, RESPONSE, g_config.max_bytes, 0);
     }
     printf("Data retrived from cache\n");
     printf("%s\n\n", RESPONSE);
@@ -347,7 +339,7 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
     }
     else
     {
-      memset(BUFFER, 0, MAX_BYTES);
+      memset(BUFFER, 0, g_config.max_bytes);
       if (!strcmp(PARSED_REQUEST->method, "GET"))
       {
         if (PARSED_REQUEST->host && PARSED_REQUEST->path && checkHTTPversion(PARSED_REQUEST->version) == 1)
@@ -420,8 +412,8 @@ int AddCache(char *DATA, int SIZE, char *URL)
 {
   int CURRENT_LOCK_VALUE = pthread_mutex_lock(&LOCK);
   printf("Lock acquired %d\n", CURRENT_LOCK_VALUE);
-  int ELEMENT_SIZE = SIZE + strlen(URL) + sizeof(CacheModule) + 1;
-  if (ELEMENT_SIZE > MAX_ELEMENT_SIZE)
+  size_t ELEMENT_SIZE = (size_t)SIZE + strlen(URL) + sizeof(CacheModule) + 1;
+  if (ELEMENT_SIZE > g_config.max_element_size)
   {
     CURRENT_LOCK_VALUE = pthread_mutex_unlock(&LOCK);
     printf("Lock released %d\n", CURRENT_LOCK_VALUE);
@@ -429,7 +421,7 @@ int AddCache(char *DATA, int SIZE, char *URL)
   }
   else
   {
-    while (CACHE_SIZE + ELEMENT_SIZE > MAX_CACHE_SIZE)
+    while (CACHE_SIZE + ELEMENT_SIZE > g_config.max_cache_size)
     {
       RemoveCache();
     }
@@ -499,22 +491,60 @@ void RemoveCache()
 int main(int argc, char *argv[])
 {
 
+  // Initialize defaults
+  config_init_defaults(&g_config);
+  config_load_file(&g_config, "/etc/proxy/proxy.conf");
+  config_apply_env(&g_config);
+  
   int CLIENT_SOCKET_ID, CLIENT_LENGTH;
   struct sockaddr_in SERVER_ADDR, CLIENT_ADDR;
-  sem_init(&SEMAPHORE, 0, MAX_CLIENTS);
+  sem_init(&SEMAPHORE, 0, g_config.max_clients);
   pthread_mutex_init(&LOCK, NULL);
 
-  if (argc == 2)
+  if (argc == 2 && (argv[1][0] == '-' || argv[1][0] == '/' || isdigit(argv[1][0])))
   {
-    PORT_NUMBER = atoi(argv[1]);
+    // Preserve positional fallback if numeric; also support --port=N
+    if (strncmp(argv[1], "--port=", 7) == 0) {
+      g_config.port = atoi(argv[1] + 7);
+    } else if (strncmp(argv[1], "--max-clients=", 14) == 0) {
+      g_config.max_clients = atoi(argv[1] + 14);
+    } else if (strncmp(argv[1], "--cache-size=", 13) == 0) {
+      g_config.max_cache_size = atol(argv[1] + 13);
+    } else if (strncmp(argv[1], "--log-level=", 12) == 0) {
+      strncpy(g_config.log_level, argv[1] + 12, sizeof(g_config.log_level)-1);
+    } else {
+      g_config.port = atoi(argv[1]); // positional
+    }
   }
-  else
-  {
-    fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+  
+  // Pre-process positional numeric argument (backward compatibility)
+  if (argc == 2 && isdigit(argv[1][0])) {
+    g_config.port = atoi(argv[1]);
+  }
+  
+  // Apply command-line overrides via official parser (handles --port=N etc.)
+  // Skip parser for pure positional numeric to preserve backward compatibility
+  int args_ok = 1;
+  if (argc == 2 && isdigit(argv[1][0])) {
+    args_ok = 1; // allow positional
+  } else {
+    args_ok = (config_apply_args(&g_config, argc, argv) == 0);
+  }
+  
+  if (args_ok == 0) {
+    fprintf(stderr, "Invalid command-line arguments\n");
     exit(1);
   }
+  
+  if (config_validate(&g_config) < 0) {
+    fprintf(stderr, "Configuration validation failed\n");
+    exit(1);
+  }
+  
+  // Dynamic allocations based on loaded limits
+  THREAD_ID = (pthread_t *)malloc(sizeof(pthread_t) * g_config.max_clients);
 
-  printf("Starting Proxy Server at Port: %d...\n", PORT_NUMBER);
+  printf("Starting Proxy Server at Port: %d...\n", g_config.port);
 
   PROXY_SOCKET_ID = socket(AF_INET, SOCK_STREAM, 0);
   if (PROXY_SOCKET_ID < 0)
@@ -532,7 +562,7 @@ int main(int argc, char *argv[])
 
   memset((char *)&SERVER_ADDR, 0, sizeof(SERVER_ADDR));
   SERVER_ADDR.sin_family = AF_INET;
-  SERVER_ADDR.sin_port = htons(PORT_NUMBER);
+  SERVER_ADDR.sin_port = htons(g_config.port);
   SERVER_ADDR.sin_addr.s_addr = INADDR_ANY;
 
   if (bind(PROXY_SOCKET_ID, (struct sockaddr *)&SERVER_ADDR,
@@ -541,8 +571,8 @@ int main(int argc, char *argv[])
     printf("Port is not available!\n");
     exit(0);
   }
-  printf("Binding on Port: %d\n", PORT_NUMBER);
-  int LISTEN_STATUS = listen(PROXY_SOCKET_ID, MAX_CLIENTS);
+  printf("Binding on Port: %d\n", g_config.port);
+  int LISTEN_STATUS = listen(PROXY_SOCKET_ID, g_config.max_clients);
 
   if (LISTEN_STATUS < 0)
   {
@@ -551,7 +581,7 @@ int main(int argc, char *argv[])
   }
 
   int ITERATOR = 0;
-  int CONNECTED_SOCKET_ID[MAX_CLIENTS];
+  int *CONNECTED_SOCKET_ID = (int *)malloc(sizeof(int) * g_config.max_clients);
 
   while (1)
   {
@@ -582,4 +612,7 @@ int main(int argc, char *argv[])
     ITERATOR += 1;
   }
   close(PROXY_SOCKET_ID);
+  free(THREAD_ID);
+  free(CONNECTED_SOCKET_ID);
   return 0;
+}
