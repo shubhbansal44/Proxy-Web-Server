@@ -56,3 +56,12 @@ dkms.conf
 
 # vs-code configurations
 .vscode
+
+# binaries
+*.gcov
+*.gcda
+*.gcno
+proxy
+fix.sh
+makefile.test
+tests/bin/

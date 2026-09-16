@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build_and_test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up GCC & Make
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc g++ make
+
+    - name: Build Proxy
+      run: make
+
+    - name: Run Tests
+      run: make test
+
+  memory_check:
+    name: Memory Leaks (Valgrind)
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential valgrind
+
+    - name: Build Proxy and Tests
+      run: make test
+
+    - name: Run Valgrind on Tests
+      run: |
+        # Run valgrind on all test binaries in tests/bin
+        # Note: If test_integration forks, --trace-children=yes might be needed.
+        for test_bin in tests/bin/test_*; do
+          echo "Valgrind: $test_bin"
+          valgrind --leak-check=full --error-exitcode=1 --trace-children=yes $test_bin
+        done
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc g++ make
+
+    - name: Run Coverage
+      run: make coverage
+
+    - name: Check Coverage Threshold
+      run: |
+        chmod +x check_coverage.sh
+        ./check_coverage.sh

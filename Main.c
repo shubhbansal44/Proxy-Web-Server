@@ -21,26 +21,7 @@
 #include <time.h>
 #include <unistd.h>
 
-// Cache Module declaration
-// DATA Buffer stores received data,
-// LENGTH tells about size of DATA,
-// URL - address asssociated with the request,
-// UPTIME signifies request's recency,
-// NEXT Pointer stores next cache module address.
-typedef struct CacheModule
-{
-  char *DATA;
-  int LENGTH;
-  char *URL;
-  time_t UPTIME;
-  CacheModule *NEXT;
-} CacheModule;
-
-CacheModule *FindCache(char *URL);
-
-int AddCache(char *DATA, int SIZE, char *URL);
-
-void RemoveCache();
+#include "cache.h"
 
 // Global configuration structure
 ProxyConfig g_config;
@@ -54,13 +35,6 @@ pthread_t *THREAD_ID;
 // semaphore lock for handling multiple (MAX CLIENTS) users.
 sem_t SEMAPHORE;
 
-// mutex lock for handling cache read/write.
-pthread_mutex_t LOCK;
-
-// global cache head
-CacheModule *HEAD;
-
-size_t CACHE_SIZE;
 
 int ConnectEndServer(void *hostname, int port)
 {
@@ -378,115 +352,6 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
   return NULL;
 }
 
-CacheModule *FindCache(char *URL)
-{
-  CacheModule *RESPONSE = NULL;
-  int CURRENT_LOCK_VALUE = pthread_mutex_lock(&LOCK);
-  printf("Lock acquired %d\n", CURRENT_LOCK_VALUE);
-  if (HEAD != NULL)
-  {
-    RESPONSE = HEAD;
-    while (RESPONSE != NULL)
-    {
-      if (!strcmp(RESPONSE->URL, URL))
-      {
-        printf("Response uptime: %ld\n", RESPONSE->UPTIME);
-        printf("Cache found!\n");
-        RESPONSE->UPTIME = time(NULL);
-        printf("Response current uptime: %ld\n", RESPONSE->UPTIME);
-        break;
-      }
-      RESPONSE = RESPONSE->NEXT;
-    }
-  }
-  else
-  {
-    printf("Cache not found\n");
-  }
-  CURRENT_LOCK_VALUE = pthread_mutex_unlock(&LOCK);
-  printf("Lock released %d\n", CURRENT_LOCK_VALUE);
-  return RESPONSE;
-}
-
-int AddCache(char *DATA, int SIZE, char *URL)
-{
-  int CURRENT_LOCK_VALUE = pthread_mutex_lock(&LOCK);
-  printf("Lock acquired %d\n", CURRENT_LOCK_VALUE);
-  size_t ELEMENT_SIZE = (size_t)SIZE + strlen(URL) + sizeof(CacheModule) + 1;
-  if (ELEMENT_SIZE > g_config.max_element_size)
-  {
-    CURRENT_LOCK_VALUE = pthread_mutex_unlock(&LOCK);
-    printf("Lock released %d\n", CURRENT_LOCK_VALUE);
-    return 0;
-  }
-  else
-  {
-    while (CACHE_SIZE + ELEMENT_SIZE > g_config.max_cache_size)
-    {
-      RemoveCache();
-    }
-    CacheModule *CACHE = (CacheModule *)malloc(sizeof(CacheModule));
-    CACHE->DATA = (char *)malloc(SIZE + 1);
-    if (!CACHE->DATA)
-    {
-      fprintf(stderr, "Something went wrong while allocating cache data!\n");
-    }
-    memcpy(CACHE->DATA, DATA, SIZE);
-    CACHE->DATA[SIZE] = '\0';
-    CACHE->URL = (char *)malloc(strlen(URL) + 1);
-    strcpy(CACHE->URL, URL);
-    CACHE->UPTIME = time(NULL);
-    CACHE->NEXT = HEAD;
-    CACHE->LENGTH = SIZE;
-    HEAD = CACHE;
-    CACHE_SIZE += ELEMENT_SIZE;
-    CURRENT_LOCK_VALUE = pthread_mutex_unlock(&LOCK);
-    printf("Lock released %d\n", CURRENT_LOCK_VALUE);
-    return 1;
-  }
-  return 0;
-}
-
-void RemoveCache()
-{
-  pthread_mutex_lock(&LOCK);
-  if (!HEAD)
-  {
-    pthread_mutex_unlock(&LOCK);
-    return;
-  }
-
-  CacheModule *prev = NULL;
-  CacheModule *cur = HEAD;
-  CacheModule *lru_prev = NULL;
-  CacheModule *lru = HEAD;
-
-  while (cur)
-  {
-    if (cur->UPTIME < lru->UPTIME)
-    {
-      lru = cur;
-      lru_prev = prev;
-    }
-    prev = cur;
-    cur = cur->NEXT;
-  }
-
-  if (lru == HEAD)
-  {
-    HEAD = HEAD->NEXT;
-  }
-  else
-  {
-    lru_prev->NEXT = lru->NEXT;
-  }
-
-  CACHE_SIZE -= (sizeof(CacheModule) + strlen(lru->URL) + lru->LENGTH + 1);
-  free(lru->DATA);
-  free(lru->URL);
-  free(lru);
-  pthread_mutex_unlock(&LOCK);
-}
 
 int main(int argc, char *argv[])
 {
@@ -499,7 +364,7 @@ int main(int argc, char *argv[])
   int CLIENT_SOCKET_ID, CLIENT_LENGTH;
   struct sockaddr_in SERVER_ADDR, CLIENT_ADDR;
   sem_init(&SEMAPHORE, 0, g_config.max_clients);
-  pthread_mutex_init(&LOCK, NULL);
+  Cache_init();
 
   if (argc == 2 && (argv[1][0] == '-' || argv[1][0] == '/' || isdigit(argv[1][0])))
   {

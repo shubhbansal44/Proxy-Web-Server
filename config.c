@@ -112,7 +112,6 @@ int config_load_file(ProxyConfig *cfg, const char *path) {
     char line[CONFIG_MAX_LINE];
     char key[256];
     char value[512];
-    int line_num = 0;
     
     if (!cfg || !path) return -1;
     
@@ -128,7 +127,6 @@ int config_load_file(ProxyConfig *cfg, const char *path) {
     
     // Parse each line
     while (fgets(line, sizeof(line), fp)) {
-        line_num++;
         
         // Skip empty lines and comments
         char *trimmed = line;
@@ -340,7 +338,7 @@ int config_apply_args(ProxyConfig *cfg, int argc, char *argv[]) {
                            "  --enable-ipv6           Enable IPv6 support\n"
                            "  --max-clients=N         Max concurrent clients (default: %d)\n"
                            "  --max-bytes=N           Max request size (default: %d)\n"
-                           "  --cache-size=N          Max cache size in bytes (default: %ld)\n"
+                           "  --cache-size=N          Max cache size in bytes (default: %d)\n"
                            "  --element-size=N        Max cache element size (default: %d)\n"
                            "  --enable-cache          Enable caching\n"
                            "  --cache-dir=DIR         Cache directory\n"
@@ -564,10 +562,10 @@ void config_print(const ProxyConfig *cfg) {
     
     printf("Limits:\n");
     printf("  Max Clients: %d\n", cfg->max_clients);
-    printf("  Max Request Size: %d bytes\n", cfg->max_bytes);
+    printf("  Max Request Size: %zu bytes\n", cfg->max_bytes);
     printf("  Max Cache Size: %zu bytes (%zu MB)\n", 
            cfg->max_cache_size, cfg->max_cache_size / (1024 * 1024));
-    printf("  Max Element Size: %d bytes\n", cfg->max_element_size);
+    printf("  Max Element Size: %zu bytes\n", cfg->max_element_size);
     
     printf("Caching:\n");
     printf("  Enabled: %s\n", cfg->enable_cache ? "true" : "false");
