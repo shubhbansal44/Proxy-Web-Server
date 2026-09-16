@@ -1,5 +1,6 @@
 #include "proxy_parse.h"
 #include "config.h"
+#include "auth.h"
 #include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <bits/time.h>
@@ -225,6 +226,12 @@ int ThrowError(int socket, int status_code)
     send(socket, str, strlen(str), 0);
     break;
 
+  case 407:
+    snprintf(str, sizeof(str), "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Proxy\"\r\nContent-Length: 122\r\nContent-Type: text/html\r\nConnection: close\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>407 Proxy Authentication Required</TITLE></HEAD>\n<BODY><H1>407 Authentication Required</H1>\n</BODY></HTML>", currentTime);
+    printf("407 Proxy Authentication Required\n");
+    send(socket, str, strlen(str), 0);
+    break;
+
   case 500:
     snprintf(str, sizeof(str), "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 115\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>500 Internal Server Error</TITLE></HEAD>\n<BODY><H1>500 Internal Server Error</H1>\n</BODY></HTML>", currentTime);
     printf("500 Internal Server Error\n");
@@ -313,6 +320,22 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
     }
     else
     {
+      // Check auth if enabled
+      if (g_config.enable_auth) {
+        struct ParsedHeader *auth_hdr = ParsedHeader_get(PARSED_REQUEST, "Proxy-Authorization");
+        const char *auth_val = auth_hdr ? auth_hdr->value : NULL;
+        
+        if (!check_basic_auth(auth_val)) {
+            ThrowError(SOCKET, 407);
+            ParsedRequest_destroy(PARSED_REQUEST);
+            free(BUFFER);
+            free(REQUEST);
+            close(SOCKET);
+            sem_post(&SEMAPHORE);
+            return NULL;
+        }
+      }
+
       memset(BUFFER, 0, g_config.max_bytes);
       if (!strcmp(PARSED_REQUEST->method, "GET"))
       {
@@ -406,6 +429,9 @@ int main(int argc, char *argv[])
     exit(1);
   }
   
+  // Initialize Auth & ACL subsystem
+  auth_init(&g_config);
+  
   // Dynamic allocations based on loaded limits
   THREAD_ID = (pthread_t *)malloc(sizeof(pthread_t) * g_config.max_clients);
 
@@ -469,6 +495,14 @@ int main(int argc, char *argv[])
     struct in_addr IP_ADDR = CLIENT_PTR->sin_addr;
     char str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &IP_ADDR, str, INET_ADDRSTRLEN);
+    
+    if (!check_ip_allowed(str)) {
+        printf("Connection denied for IP: %s (IP ACL block)\n", str);
+        close(CLIENT_SOCKET_ID);
+        CONNECTED_SOCKET_ID[ITERATOR] = 0;
+        continue;
+    }
+    
     printf("Client is connected via Port number: %d and IP address: %s\n",
            ntohs(CLIENT_ADDR.sin_port), str);
 

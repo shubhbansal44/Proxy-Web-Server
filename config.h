@@ -53,6 +53,8 @@ typedef struct {
     bool   enable_auth;
     char   auth_file[512];
     char   blocklist_file[512];
+    char   allow_ip_file[512];
+    char   deny_ip_file[512];
 
     /* Logging */
     char   log_file[512];

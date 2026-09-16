@@ -36,6 +36,8 @@ void config_init_defaults(ProxyConfig *cfg) {
     cfg->enable_auth = DEFAULT_ENABLE_AUTH;
     cfg->auth_file[0] = '\0';
     cfg->blocklist_file[0] = '\0';
+    cfg->allow_ip_file[0] = '\0';
+    cfg->deny_ip_file[0] = '\0';
     
     /* Logging */
     strncpy(cfg->log_file, DEFAULT_LOG_FILE, sizeof(cfg->log_file) - 1);
@@ -169,6 +171,12 @@ int config_load_file(ProxyConfig *cfg, const char *path) {
             } else if (strcmp(key, "blocklist_file") == 0) {
                 strncpy(cfg->blocklist_file, value, sizeof(cfg->blocklist_file) - 1);
                 cfg->blocklist_file[sizeof(cfg->blocklist_file) - 1] = '\0';
+            } else if (strcmp(key, "allow_ip_file") == 0) {
+                strncpy(cfg->allow_ip_file, value, sizeof(cfg->allow_ip_file) - 1);
+                cfg->allow_ip_file[sizeof(cfg->allow_ip_file) - 1] = '\0';
+            } else if (strcmp(key, "deny_ip_file") == 0) {
+                strncpy(cfg->deny_ip_file, value, sizeof(cfg->deny_ip_file) - 1);
+                cfg->deny_ip_file[sizeof(cfg->deny_ip_file) - 1] = '\0';
             } else if (strcmp(key, "log_file") == 0) {
                 strncpy(cfg->log_file, value, sizeof(cfg->log_file) - 1);
                 cfg->log_file[sizeof(cfg->log_file) - 1] = '\0';
@@ -317,7 +325,7 @@ void config_apply_env(ProxyConfig *cfg) {
 
 /**
  * Apply command-line argument overrides.
- * Supports: --port=N, --max-clients=N, --cache-size=N, --log-level=LEVEL
+ * Supports: --port=N, --max-clients=N, --cache-size=N, --log-level=LEVEL, --allow-ip-file=FILE, --deny-ip-file=FILE
  * Returns 0 on success, -1 if invalid argument.
  */
 int config_apply_args(ProxyConfig *cfg, int argc, char *argv[]) {
@@ -345,6 +353,8 @@ int config_apply_args(ProxyConfig *cfg, int argc, char *argv[]) {
                            "  --enable-auth           Enable authentication\n"
                            "  --auth-file=FILE        Auth file path\n"
                            "  --blocklist-file=FILE   Blocklist file path\n"
+                           "  --allow-ip-file=FILE    File with allowed IP addresses\n"
+                           "  --deny-ip-file=FILE     File with denied IP addresses\n"
                            "  --log-file=FILE         Log file path (default: %s)\n"
                            "  --log-level=LEVEL       Log level (DEBUG,INFO,WARN,ERROR)\n"
                            "  --enable-throttling     Enable rate limiting\n"
@@ -408,6 +418,12 @@ int config_apply_args(ProxyConfig *cfg, int argc, char *argv[]) {
                 } else if (strcmp(key, "blocklist-file") == 0) {
                     strncpy(cfg->blocklist_file, value, sizeof(cfg->blocklist_file) - 1);
                     cfg->blocklist_file[sizeof(cfg->blocklist_file) - 1] = '\0';
+                } else if (strcmp(key, "allow-ip-file") == 0) {
+                    strncpy(cfg->allow_ip_file, value, sizeof(cfg->allow_ip_file) - 1);
+                    cfg->allow_ip_file[sizeof(cfg->allow_ip_file) - 1] = '\0';
+                } else if (strcmp(key, "deny-ip-file") == 0) {
+                    strncpy(cfg->deny_ip_file, value, sizeof(cfg->deny_ip_file) - 1);
+                    cfg->deny_ip_file[sizeof(cfg->deny_ip_file) - 1] = '\0';
                 } else if (strcmp(key, "log-file") == 0) {
                     strncpy(cfg->log_file, value, sizeof(cfg->log_file) - 1);
                     cfg->log_file[sizeof(cfg->log_file) - 1] = '\0';
@@ -580,6 +596,12 @@ void config_print(const ProxyConfig *cfg) {
     }
     if (strlen(cfg->blocklist_file) > 0) {
         printf("  Blocklist File: %s\n", cfg->blocklist_file);
+    }
+    if (strlen(cfg->allow_ip_file) > 0) {
+        printf("  Allow IP File: %s\n", cfg->allow_ip_file);
+    }
+    if (strlen(cfg->deny_ip_file) > 0) {
+        printf("  Deny IP File: %s\n", cfg->deny_ip_file);
     }
     
     printf("Logging:\n");
