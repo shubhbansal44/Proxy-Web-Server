@@ -44,8 +44,13 @@ void config_init_defaults(ProxyConfig *cfg) {
     cfg->log_file[sizeof(cfg->log_file) - 1] = '\0';
     strncpy(cfg->log_level, DEFAULT_LOG_LEVEL, sizeof(cfg->log_level) - 1);
     cfg->log_level[sizeof(cfg->log_level) - 1] = '\0';
+    strncpy(cfg->log_format, DEFAULT_LOG_FORMAT, sizeof(cfg->log_format) - 1);
+    cfg->log_format[sizeof(cfg->log_format) - 1] = '\0';
     cfg->log_rotation = false;
     cfg->log_max_size_mb = 10;
+    
+    cfg->enable_admin = DEFAULT_ENABLE_ADMIN;
+    cfg->admin_port = DEFAULT_ADMIN_PORT;
     
     /* Throttling */
     cfg->enable_throttling = DEFAULT_ENABLE_THROTTLING;
@@ -183,6 +188,14 @@ int config_load_file(ProxyConfig *cfg, const char *path) {
             } else if (strcmp(key, "log_level") == 0) {
                 strncpy(cfg->log_level, value, sizeof(cfg->log_level) - 1);
                 cfg->log_level[sizeof(cfg->log_level) - 1] = '\0';
+            } else if (strcmp(key, "log_format") == 0) {
+                strncpy(cfg->log_format, value, sizeof(cfg->log_format) - 1);
+                cfg->log_format[sizeof(cfg->log_format) - 1] = '\0';
+            } else if (strcmp(key, "enable_admin") == 0) {
+                cfg->enable_admin = (strcasecmp(value, "true") == 0 || 
+                                    strcmp(value, "1") == 0);
+            } else if (strcmp(key, "admin_port") == 0) {
+                cfg->admin_port = atoi(value);
             } else if (strcmp(key, "log_rotation") == 0) {
                 cfg->log_rotation = (strcasecmp(value, "true") == 0 || 
                                     strcmp(value, "1") == 0);

@@ -23,6 +23,10 @@
 #include <unistd.h>
 
 #include "cache.h"
+#include "logger.h"
+#include "metrics.h"
+#include "admin.h"
+#include <signal.h>
 
 // Global configuration structure
 ProxyConfig g_config;
@@ -42,14 +46,14 @@ int ConnectEndServer(void *hostname, int port)
   int END_SERVER_SOCKET = socket(AF_INET, SOCK_STREAM, 0);
   if (END_SERVER_SOCKET < 0)
   {
-    fprintf(stderr, "ConnectEndServer: Something went wrong while inializing end server socket!\n");
+    LOG_ERROR("ConnectEndServer: Something went wrong while inializing end server socket!\n");
     return -1;
   }
 
   struct hostent *HOST = gethostbyname((const char *)hostname);
   if (HOST == NULL)
   {
-    fprintf(stderr, "ConnectEndServer: No such host exists: %s\n", (char *)hostname);
+    LOG_ERROR("ConnectEndServer: No such host exists: %s\n", (char *)hostname);
     close(END_SERVER_SOCKET);
     return -1;
   }
@@ -64,7 +68,7 @@ int ConnectEndServer(void *hostname, int port)
 
   if (connect(END_SERVER_SOCKET, (struct sockaddr *)&END_SERVER_ADDR, sizeof(END_SERVER_ADDR)) < 0)
   {
-    fprintf(stderr, "ConnectEndServer: connect to end server failed");
+    LOG_ERROR("ConnectEndServer: connect to end server failed");
     close(END_SERVER_SOCKET);
     return -1;
   }
@@ -84,20 +88,20 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
 
   if (ParsedHeader_set(CLIENT_PARSED_REQUEST, "Connection", "close") < 0)
   {
-    fprintf(stderr, "HandleRequest: Error occured While Establising Parsed request connection!\n");
+    LOG_ERROR("HandleRequest: Error occured While Establising Parsed request connection!\n");
   }
 
   if (ParsedHeader_get(CLIENT_PARSED_REQUEST, "Host") == NULL)
   {
     if (ParsedHeader_set(CLIENT_PARSED_REQUEST, "Host", CLIENT_PARSED_REQUEST->host) < 0)
     {
-      fprintf(stderr, "HandleRequest: Error occured while setting host in Parsed Request header!\n");
+      LOG_ERROR("HandleRequest: Error occured while setting host in Parsed Request header!\n");
     }
   }
 
   if (ParsedRequest_unparse_headers(CLIENT_PARSED_REQUEST, BUFFER + LENGTH, (size_t)g_config.max_bytes - LENGTH) < 0)
   {
-    fprintf(stderr, "HandleRequest: Error occured while unparsing headers!\n");
+    LOG_ERROR("HandleRequest: Error occured while unparsing headers!\n");
   }
 
   int END_SERVER_PORT = 80;
@@ -109,7 +113,7 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
   int END_SERVER_SOCKET_ID = ConnectEndServer(CLIENT_PARSED_REQUEST->host, END_SERVER_PORT);
   if (END_SERVER_SOCKET_ID < 0)
   {
-    fprintf(stderr, "HandleRequest: Error occured while creating end server socket ID!\n");
+    LOG_ERROR("HandleRequest: Error occured while creating end server socket ID!\n");
     return -1;
   }
 
@@ -117,7 +121,7 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
   ssize_t BYTES_SEND = send(END_SERVER_SOCKET_ID, BUFFER, strlen(BUFFER), 0);
   if (BYTES_SEND < 0)
   {
-    fprintf(stderr, "HandleRequest: sending request to end server failed");
+    LOG_ERROR("HandleRequest: sending request to end server failed");
     close(END_SERVER_SOCKET_ID);
     return -1;
   }
@@ -138,7 +142,7 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
     ssize_t BYTES_SEND_CLIENT = send(CLIENT_SOCKET_ID, BUFFER, BYTES_RECEIVED, 0);
     if (BYTES_SEND_CLIENT < 0)
     {
-      fprintf(stderr, "HandleRequest: send to client failed");
+      LOG_ERROR("HandleRequest: send to client failed");
       break;
     }
     /* append to RESPONSE buffer */
@@ -148,7 +152,7 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
       char *TEMP = (char *)realloc(RESPONSE, RESPONSE_CAPACITY);
       if (!TEMP)
       {
-        fprintf(stderr, "HandleRequest: realloc failed");
+        LOG_ERROR("HandleRequest: realloc failed");
         break;
       }
       RESPONSE = TEMP;
@@ -158,7 +162,7 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
   }
 
   if (BYTES_RECEIVED < 0)
-    fprintf(stderr, "HandleRequest: recv from end server failed");
+    LOG_ERROR("HandleRequest: recv from end server failed");
 
   /* null-terminate for safety */
   if (RESPONSE_LENGTH + 1 > RESPONSE_CAPACITY)
@@ -210,43 +214,43 @@ int ThrowError(int socket, int status_code)
   {
   case 400:
     snprintf(str, sizeof(str), "HTTP/1.1 400 Bad Request\r\nContent-Length: 95\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>400 Bad Request</TITLE></HEAD>\n<BODY><H1>400 Bad Rqeuest</H1>\n</BODY></HTML>", currentTime);
-    printf("400 Bad Request\n");
+    LOG_INFO("400 Bad Request");
     send(socket, str, strlen(str), 0);
     break;
 
   case 403:
     snprintf(str, sizeof(str), "HTTP/1.1 403 Forbidden\r\nContent-Length: 112\r\nContent-Type: text/html\r\nConnection: keep-alive\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>403 Forbidden</TITLE></HEAD>\n<BODY><H1>403 Forbidden</H1><br>Permission Denied\n</BODY></HTML>", currentTime);
-    printf("403 Forbidden\n");
+    LOG_INFO("403 Forbidden");
     send(socket, str, strlen(str), 0);
     break;
 
   case 404:
     snprintf(str, sizeof(str), "HTTP/1.1 404 Not Found\r\nContent-Length: 91\r\nContent-Type: text/html\r\nConnection: keep-alive\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>404 Not Found</TITLE></HEAD>\n<BODY><H1>404 Not Found</H1>\n</BODY></HTML>", currentTime);
-    printf("404 Not Found\n");
+    LOG_INFO("404 Not Found");
     send(socket, str, strlen(str), 0);
     break;
 
   case 407:
     snprintf(str, sizeof(str), "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Proxy\"\r\nContent-Length: 122\r\nContent-Type: text/html\r\nConnection: close\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>407 Proxy Authentication Required</TITLE></HEAD>\n<BODY><H1>407 Authentication Required</H1>\n</BODY></HTML>", currentTime);
-    printf("407 Proxy Authentication Required\n");
+    LOG_INFO("407 Proxy Authentication Required");
     send(socket, str, strlen(str), 0);
     break;
 
   case 500:
     snprintf(str, sizeof(str), "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 115\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>500 Internal Server Error</TITLE></HEAD>\n<BODY><H1>500 Internal Server Error</H1>\n</BODY></HTML>", currentTime);
-    printf("500 Internal Server Error\n");
+    LOG_INFO("500 Internal Server Error");
     send(socket, str, strlen(str), 0);
     break;
 
   case 501:
     snprintf(str, sizeof(str), "HTTP/1.1 501 Not Implemented\r\nContent-Length: 103\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>404 Not Implemented</TITLE></HEAD>\n<BODY><H1>501 Not Implemented</H1>\n</BODY></HTML>", currentTime);
-    printf("501 Not Implemented\n");
+    LOG_INFO("501 Not Implemented");
     send(socket, str, strlen(str), 0);
     break;
 
   case 505:
     snprintf(str, sizeof(str), "HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 125\r\nConnection: keep-alive\r\nContent-Type: text/html\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>505 HTTP Version Not Supported</TITLE></HEAD>\n<BODY><H1>505 HTTP Version Not Supported</H1>\n</BODY></HTML>", currentTime);
-    printf("505 HTTP Version Not Supported\n");
+    LOG_INFO("505 HTTP Version Not Supported");
     send(socket, str, strlen(str), 0);
     break;
 
@@ -258,10 +262,15 @@ int ThrowError(int socket, int status_code)
 
 void *THREAD_ROUTINE(void *NEW_SOCKET)
 {
+  struct timespec start_time, end_time;
+  clock_gettime(CLOCK_MONOTONIC, &start_time);
+  
+  metrics_increment_requests();
+
   sem_wait(&SEMAPHORE);
   int CURRENT_SEMAPHORE_VALUE;
   sem_getvalue(&SEMAPHORE, &CURRENT_SEMAPHORE_VALUE);
-  printf("Currently available Sockets: %d\n", CURRENT_SEMAPHORE_VALUE);
+  LOG_INFO("Currently available Sockets: %d", CURRENT_SEMAPHORE_VALUE);
 
   int *NEW_SOCKET_PTR = (int *)NEW_SOCKET;
   int SOCKET = *NEW_SOCKET_PTR;
@@ -290,9 +299,41 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
     REQUEST[i] = BUFFER[i];
   }
 
+  // Get client IP for access log
+  struct sockaddr_in client_addr;
+  socklen_t addr_len = sizeof(client_addr);
+  char client_ip[INET_ADDRSTRLEN] = "UNKNOWN";
+  if (getpeername(SOCKET, (struct sockaddr*)&client_addr, &addr_len) == 0) {
+      inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+  }
+
+  int response_status = 200;
+  int response_size = 0;
+  const char* method = "UNKNOWN";
+  const char* url = "UNKNOWN";
+  char trace_id_str[64];
+  snprintf(trace_id_str, sizeof(trace_id_str), "%08x%08x", (unsigned int)time(NULL), (unsigned int)rand());
+
+  struct ParsedRequest *PARSED_REQUEST = ParsedRequest_create();
+  int parse_result = -1;
+  if (BYTES_RECIEVED > 0) {
+      parse_result = ParsedRequest_parse(PARSED_REQUEST, BUFFER, strlen(BUFFER));
+      if (parse_result >= 0) {
+          struct ParsedHeader *trace_hdr = ParsedHeader_get(PARSED_REQUEST, "X-Trace-Id");
+          if (trace_hdr && trace_hdr->value) {
+              snprintf(trace_id_str, sizeof(trace_id_str), "%s", trace_hdr->value);
+          } else {
+              ParsedHeader_set(PARSED_REQUEST, "X-Trace-Id", trace_id_str);
+          }
+          if (PARSED_REQUEST->method) method = PARSED_REQUEST->method;
+          if (PARSED_REQUEST->path) url = PARSED_REQUEST->path;
+      }
+  }
+
   CacheModule *CACHE = FindCache(REQUEST);
   if (CACHE != NULL)
   {
+    metrics_increment_cache_hits();
     int SIZE = CACHE->LENGTH / sizeof(char);
     int POS = 0;
     char RESPONSE[g_config.max_bytes];
@@ -303,23 +344,31 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
       {
         RESPONSE[i] = CACHE->DATA[POS];
         POS++;
+        response_size++;
       }
       send(SOCKET, RESPONSE, g_config.max_bytes, 0);
     }
-    printf("Data retrived from cache\n");
-    printf("%s\n\n", RESPONSE);
+    LOG_INFO("Data retrived from cache");
+    LOG_INFO("%s\n", RESPONSE);
+    
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+    logger_access_log(client_ip, 200, response_size, method, url, elapsed_ms, "text/html", trace_id_str);
+    
+    ParsedRequest_destroy(PARSED_REQUEST);
   }
   else if (BYTES_RECIEVED > 0)
   {
     LENGTH = strlen(BUFFER);
-    struct ParsedRequest *PARSED_REQUEST = ParsedRequest_create();
 
-    if (ParsedRequest_parse(PARSED_REQUEST, BUFFER, LENGTH) < 0)
+    if (parse_result < 0)
     {
-      printf("Parsing failed!\n");
+      LOG_INFO("Parsing failed!");
+      response_status = 400;
     }
     else
     {
+
       // Check auth if enabled
       if (g_config.enable_auth) {
         struct ParsedHeader *auth_hdr = ParsedHeader_get(PARSED_REQUEST, "Proxy-Authorization");
@@ -327,6 +376,12 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
         
         if (!check_basic_auth(auth_val)) {
             ThrowError(SOCKET, 407);
+            response_status = 407;
+            
+            clock_gettime(CLOCK_MONOTONIC, &end_time);
+            double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+            logger_access_log(client_ip, response_status, 0, method, url, elapsed_ms, "text/html", trace_id_str);
+            
             ParsedRequest_destroy(PARSED_REQUEST);
             free(BUFFER);
             free(REQUEST);
@@ -341,27 +396,38 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
       {
         if (PARSED_REQUEST->host && PARSED_REQUEST->path && checkHTTPversion(PARSED_REQUEST->version) == 1)
         {
-          BYTES_RECIEVED = HandleRequest(SOCKET, PARSED_REQUEST, REQUEST);
-          if (BYTES_RECIEVED == -1)
+          int handle_res = HandleRequest(SOCKET, PARSED_REQUEST, REQUEST);
+          if (handle_res == -1)
           {
             ThrowError(SOCKET, 500);
+            response_status = 500;
+            metrics_increment_errors();
           }
         }
         else
         {
           ThrowError(SOCKET, 500);
+          response_status = 500;
+          metrics_increment_errors();
         }
       }
       else
       {
-        printf("Can't handle request other than \'GET\'\n");
+        LOG_INFO("Can't handle request other than \'GET\'");
+        ThrowError(SOCKET, 501);
+        response_status = 501;
+        metrics_increment_errors();
       }
     }
+    
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+    logger_access_log(client_ip, response_status, 0, method, url, elapsed_ms, "text/html", trace_id_str); // Need actual sizes if possible
     ParsedRequest_destroy(PARSED_REQUEST);
   }
   else if (BYTES_RECIEVED == 0)
   {
-    printf("Request didn't received, user may be disconnected\n");
+    LOG_INFO("Request didn't received, user may be disconnected");
   }
   shutdown(SOCKET, SHUT_RDWR);
   close(SOCKET);
@@ -369,15 +435,25 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
 
   sem_post(&SEMAPHORE);
   sem_getvalue(&SEMAPHORE, &CURRENT_SEMAPHORE_VALUE);
-  printf("Currently available Sockets: %d\n", CURRENT_SEMAPHORE_VALUE);
+  LOG_INFO("Currently available Sockets: %d", CURRENT_SEMAPHORE_VALUE);
 
   free(REQUEST);
+  
   return NULL;
 }
 
 
+void handle_signal(int sig) {
+    LOG_INFO("Received signal %d, shutting down...", sig);
+    admin_server_stop();
+    logger_shutdown();
+    exit(0);
+}
+
 int main(int argc, char *argv[])
 {
+  signal(SIGINT, handle_signal);
+  signal(SIGTERM, handle_signal);
 
   // Initialize defaults
   config_init_defaults(&g_config);
@@ -420,27 +496,57 @@ int main(int argc, char *argv[])
   }
   
   if (args_ok == 0) {
-    fprintf(stderr, "Invalid command-line arguments\n");
+    LOG_ERROR("Invalid command-line arguments\n");
     exit(1);
   }
   
   if (config_validate(&g_config) < 0) {
-    fprintf(stderr, "Configuration validation failed\n");
+    LOG_ERROR("Configuration validation failed\n");
     exit(1);
   }
   
   // Initialize Auth & ACL subsystem
   auth_init(&g_config);
   
+  // Initialize Observability subsystem
+  LoggerConfig log_cfg;
+  strncpy(log_cfg.log_file, g_config.log_file, sizeof(log_cfg.log_file)-1);
+  log_cfg.log_file[sizeof(log_cfg.log_file)-1] = '\0';
+  
+  LogLevelEnum l_enum = LOG_LEVEL_INFO;
+  if (!strcmp(g_config.log_level, "DEBUG")) l_enum = LOG_LEVEL_DEBUG;
+  else if (!strcmp(g_config.log_level, "WARN")) l_enum = LOG_LEVEL_WARN;
+  else if (!strcmp(g_config.log_level, "ERROR")) l_enum = LOG_LEVEL_ERROR;
+  else if (!strcmp(g_config.log_level, "CRITICAL")) l_enum = LOG_LEVEL_CRITICAL;
+  
+  log_cfg.level = l_enum;
+  log_cfg.max_file_size_mb = g_config.log_max_size_mb;
+  log_cfg.rotation_enabled = g_config.log_rotation;
+  log_cfg.use_syslog = false;
+  if (strcmp(g_config.log_format, "JSON") == 0) log_cfg.format = LOG_FORMAT_JSON;
+  else if (strcmp(g_config.log_format, "CLF") == 0) log_cfg.format = LOG_FORMAT_CLF;
+  else log_cfg.format = LOG_FORMAT_SQUID;
+  
+  if (!logger_init(&log_cfg)) {
+      LOG_ERROR("Failed to initialize logger!\n");
+  }
+
+  metrics_init();
+  
+  AdminConfig admin_cfg;
+  admin_cfg.enabled = g_config.enable_admin;
+  admin_cfg.port = g_config.admin_port;
+  admin_server_start(&admin_cfg);
+  
   // Dynamic allocations based on loaded limits
   THREAD_ID = (pthread_t *)malloc(sizeof(pthread_t) * g_config.max_clients);
 
-  printf("Starting Proxy Server at Port: %d...\n", g_config.port);
+  LOG_INFO("Starting Proxy Server at Port: %d...", g_config.port);
 
   PROXY_SOCKET_ID = socket(AF_INET, SOCK_STREAM, 0);
   if (PROXY_SOCKET_ID < 0)
   {
-    printf("Failed to create Proxy Socket ID!\n");
+    LOG_INFO("Failed to create Proxy Socket ID!");
     exit(1);
   }
 
@@ -448,7 +554,7 @@ int main(int argc, char *argv[])
   if (setsockopt(PROXY_SOCKET_ID, SOL_SOCKET, SO_REUSEADDR,
                  (const char *)&REUSE, sizeof(REUSE)) < 0)
   {
-    printf("Execution failed while setting Socket option(setsockopt)!\n");
+    LOG_INFO("Execution failed while setting Socket option(setsockopt)!");
   }
 
   memset((char *)&SERVER_ADDR, 0, sizeof(SERVER_ADDR));
@@ -459,15 +565,15 @@ int main(int argc, char *argv[])
   if (bind(PROXY_SOCKET_ID, (struct sockaddr *)&SERVER_ADDR,
            sizeof(SERVER_ADDR)) < 0)
   {
-    printf("Port is not available!\n");
+    LOG_INFO("Port is not available!");
     exit(0);
   }
-  printf("Binding on Port: %d\n", g_config.port);
+  LOG_INFO("Binding on Port: %d", g_config.port);
   int LISTEN_STATUS = listen(PROXY_SOCKET_ID, g_config.max_clients);
 
   if (LISTEN_STATUS < 0)
   {
-    printf("Error occured while listening!\n");
+    LOG_INFO("Error occured while listening!");
     exit(1);
   }
 
@@ -483,7 +589,7 @@ int main(int argc, char *argv[])
 
     if (CLIENT_SOCKET_ID < 0)
     {
-      printf("Unable to connect new user!\n");
+      LOG_INFO("Unable to connect new user!");
       exit(1);
     }
     else
@@ -497,7 +603,7 @@ int main(int argc, char *argv[])
     inet_ntop(AF_INET, &IP_ADDR, str, INET_ADDRSTRLEN);
     
     if (!check_ip_allowed(str)) {
-        printf("Connection denied for IP: %s (IP ACL block)\n", str);
+        LOG_INFO("Connection denied for IP: %s (IP ACL block)", str);
         close(CLIENT_SOCKET_ID);
         CONNECTED_SOCKET_ID[ITERATOR] = 0;
         continue;

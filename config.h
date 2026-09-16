@@ -13,6 +13,9 @@
 #define DEFAULT_BIND_ADDRESS      "0.0.0.0"
 #define DEFAULT_LOG_LEVEL         "INFO"
 #define DEFAULT_LOG_FILE          "proxy.log"
+#define DEFAULT_LOG_FORMAT        "SQUID"
+#define DEFAULT_ENABLE_ADMIN      true
+#define DEFAULT_ADMIN_PORT        8081
 #define DEFAULT_CONFIG_FILE       "/etc/proxy/proxy.conf"
 
 /* Feature flags */
@@ -59,8 +62,13 @@ typedef struct {
     /* Logging */
     char   log_file[512];
     char   log_level[32];
+    char   log_format[32];
     bool   log_rotation;
     int    log_max_size_mb;
+
+    /* Admin */
+    bool   enable_admin;
+    int    admin_port;
 
     /* Throttling */
     bool   enable_throttling;
@@ -73,6 +81,8 @@ typedef struct {
     bool   enable_http2;
     bool   enable_filter;
 } ProxyConfig;
+
+extern ProxyConfig g_config;
 
 /* Configuration source precedence:
  * 1. Compiled-in defaults
