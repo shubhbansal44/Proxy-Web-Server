@@ -79,6 +79,11 @@ typedef struct {
     /* Features */
     bool   enable_https;
     bool   enable_http2;
+    
+    /* TLS */
+    bool   tls_verify_peer;
+    char   ca_bundle_file[512];
+    char   crl_file[512];
     bool   enable_filter;
 } ProxyConfig;
 

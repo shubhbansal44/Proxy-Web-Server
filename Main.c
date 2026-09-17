@@ -1,5 +1,6 @@
 #include "proxy_parse.h"
 #include "config.h"
+#include "tls_tunnel.h"
 #include "auth.h"
 #include <arpa/inet.h>
 #include <asm-generic/socket.h>
@@ -392,7 +393,7 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
       }
 
       memset(BUFFER, 0, g_config.max_bytes);
-      if (!strcmp(PARSED_REQUEST->method, "GET"))
+if (!strcmp(PARSED_REQUEST->method, "GET"))
       {
         if (PARSED_REQUEST->host && PARSED_REQUEST->path && checkHTTPversion(PARSED_REQUEST->version) == 1)
         {
@@ -408,6 +409,17 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
         {
           ThrowError(SOCKET, 500);
           response_status = 500;
+          metrics_increment_errors();
+        }
+      }
+      else if (!strcmp(PARSED_REQUEST->method, "CONNECT"))
+      {
+        int port = PARSED_REQUEST->port ? atoi(PARSED_REQUEST->port) : 443;
+        int handle_res = HandleConnect(SOCKET, PARSED_REQUEST->host, port);
+        if (handle_res == -1)
+        {
+          ThrowError(SOCKET, 500); // Bad Gateway or internal error
+          response_status = 502;
           metrics_increment_errors();
         }
       }
@@ -446,6 +458,7 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
 void handle_signal(int sig) {
     LOG_INFO("Received signal %d, shutting down...", sig);
     admin_server_stop();
+    CleanupOpenSSL();
     logger_shutdown();
     exit(0);
 }
@@ -456,6 +469,7 @@ int main(int argc, char *argv[])
   signal(SIGTERM, handle_signal);
 
   // Initialize defaults
+  InitOpenSSL();
   config_init_defaults(&g_config);
   config_load_file(&g_config, "/etc/proxy/proxy.conf");
   config_apply_env(&g_config);
@@ -617,6 +631,7 @@ int main(int argc, char *argv[])
     ITERATOR += 1;
   }
   close(PROXY_SOCKET_ID);
+  CleanupOpenSSL();
   free(THREAD_ID);
   free(CONNECTED_SOCKET_ID);
   return 0;

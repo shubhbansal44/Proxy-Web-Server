@@ -60,6 +60,9 @@ void config_init_defaults(ProxyConfig *cfg) {
     
     /* Features */
     cfg->enable_https = DEFAULT_ENABLE_HTTPS;
+    cfg->tls_verify_peer = true;
+    cfg->ca_bundle_file[0] = '\0';
+    cfg->crl_file[0] = '\0';
     cfg->enable_http2 = DEFAULT_ENABLE_HTTP2;
     cfg->enable_filter = DEFAULT_ENABLE_FILTER;
 }
@@ -633,6 +636,8 @@ void config_print(const ProxyConfig *cfg) {
     
     printf("Features:\n");
     printf("  HTTPS CONNECT: %s\n", cfg->enable_https ? "true" : "false");
+    printf("  TLS Verify Peer: %s\n", cfg->tls_verify_peer ? "true" : "false");
+    if (cfg->ca_bundle_file[0]) printf("  CA Bundle File: %s\n", cfg->ca_bundle_file);
     printf("  HTTP/2: %s\n", cfg->enable_http2 ? "true" : "false");
     printf("  Content Filtering: %s\n", cfg->enable_filter ? "true" : "false");
     printf("==========================\n");
