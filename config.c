@@ -28,6 +28,11 @@ void config_init_defaults(ProxyConfig *cfg) {
     cfg->max_cache_size = DEFAULT_MAX_CACHE_SIZE;
     cfg->max_element_size = DEFAULT_MAX_ELEMENT_SIZE;
     
+    /* Protocol Limits */
+    cfg->max_http1_connections = DEFAULT_MAX_HTTP1_CONNECTIONS;
+    cfg->max_http2_connections = DEFAULT_MAX_HTTP2_CONNECTIONS;
+    cfg->max_http3_connections = DEFAULT_MAX_HTTP3_CONNECTIONS;
+    
     /* Caching */
     cfg->enable_cache = DEFAULT_ENABLE_CACHE;
     cfg->cache_dir[0] = '\0';

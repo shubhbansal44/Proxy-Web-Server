@@ -27,6 +27,7 @@
 #include "logger.h"
 #include "metrics.h"
 #include "admin.h"
+#include "http3.h"
 #include <signal.h>
 
 // Global configuration structure
@@ -280,18 +281,57 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
   char *BUFFER = (char *)calloc(g_config.max_bytes, sizeof(char));
   memset(BUFFER, 0, g_config.max_bytes);
 
-  BYTES_RECIEVED = recv(SOCKET, BUFFER, g_config.max_bytes, 0);
-  while (BYTES_RECIEVED > 0)
+  // Check if it's an HTTP/2 or WebSockets or generic TLS tunnel request (for port 443 proxy)
+  // Or if it's h2c preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+  const char *H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+  
+  BYTES_RECIEVED = recv(SOCKET, BUFFER, g_config.max_bytes, MSG_PEEK);
+  
+  if (BYTES_RECIEVED > 0 && 
+      (BUFFER[0] == 0x16 || // TLS Handshake
+       (BYTES_RECIEVED >= 24 && memcmp(BUFFER, H2_PREFACE, 24) == 0))) 
   {
-    LENGTH = strlen(BUFFER);
-    if (strstr(BUFFER, "\r\n\r\n") == NULL)
-    {
-      BYTES_RECIEVED = recv(SOCKET, BUFFER + LENGTH, g_config.max_bytes - LENGTH, 0);
-    }
-    else
-    {
-      break;
-    }
+      // Explicit CONNECT is mandatory. Raw TLS/h2c detected directly on a 
+      // fresh socket instead of an HTTP/1.1 proxy payload must be rejected.
+      LOG_ERROR("Raw TLS or h2c detected without prior CONNECT. Rejecting.");
+      ThrowError(SOCKET, 400);
+      
+      // Get client IP for access log reporting before exit
+      struct sockaddr_in client_addr_fail;
+      socklen_t addr_len_fail = sizeof(client_addr_fail);
+      char client_ip_fail[INET_ADDRSTRLEN] = "UNKNOWN";
+      if (getpeername(SOCKET, (struct sockaddr*)&client_addr_fail, &addr_len_fail) == 0) {
+          inet_ntop(AF_INET, &client_addr_fail.sin_addr, client_ip_fail, INET_ADDRSTRLEN);
+      }
+      
+      clock_gettime(CLOCK_MONOTONIC, &end_time);
+      double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+      logger_access_log(client_ip_fail, 400, 0, "UNKNOWN", "UNKNOWN", elapsed_ms, "text/html", "UNKNOWN");
+      
+      // Also grab the peek bytes to drain them
+      recv(SOCKET, BUFFER, g_config.max_bytes, 0);
+      
+      close(SOCKET);
+      free(BUFFER);
+      sem_post(&SEMAPHORE);
+      
+      return NULL;
+  }
+  else
+  {
+      BYTES_RECIEVED = recv(SOCKET, BUFFER, g_config.max_bytes, 0);
+      while (BYTES_RECIEVED > 0)
+      {
+        LENGTH = strlen(BUFFER);
+        if (strstr(BUFFER, "\r\n\r\n") == NULL)
+        {
+          BYTES_RECIEVED = recv(SOCKET, BUFFER + LENGTH, g_config.max_bytes - LENGTH, 0);
+        }
+        else
+        {
+          break;
+        }
+      }
   }
 
   char *REQUEST = (char *)malloc(strlen(BUFFER) * sizeof(char) + 1);
@@ -556,6 +596,8 @@ int main(int argc, char *argv[])
   THREAD_ID = (pthread_t *)malloc(sizeof(pthread_t) * g_config.max_clients);
 
   LOG_INFO("Starting Proxy Server at Port: %d...", g_config.port);
+
+  start_http3_server(g_config.port);
 
   PROXY_SOCKET_ID = socket(AF_INET, SOCK_STREAM, 0);
   if (PROXY_SOCKET_ID < 0)

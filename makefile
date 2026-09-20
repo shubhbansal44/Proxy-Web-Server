@@ -1,10 +1,13 @@
 CC=g++
 CFLAGS= -g -Wall -pthread
 COVERAGE_FLAGS= -fprofile-arcs -ftest-coverage
+HTTP2_LIBS= -lnghttp2
+QUICHE_DIR=deps/quiche
+QUICHE_LIBS=-L$(QUICHE_DIR)/target/release -Ltarget/release -lquiche -ldl -lrt -pthread -Wl,-rpath,$(QUICHE_DIR)/target/release -Wl,-rpath,target/release
 
 all: proxy
 
-proxy: Main.c config.c cache.c proxy_parse.c auth.c logger.c metrics.c admin.c tls_tunnel.c
+proxy: Main.c config.c cache.c proxy_parse.c auth.c logger.c metrics.c admin.c tls_tunnel.c http2.c http3.c
 	$(CC) $(CFLAGS) -o proxy_parse.o -c proxy_parse.c
 	$(CC) $(CFLAGS) -o cache.o -c cache.c
 	$(CC) $(CFLAGS) -o config.o -c config.c
@@ -12,9 +15,11 @@ proxy: Main.c config.c cache.c proxy_parse.c auth.c logger.c metrics.c admin.c t
 	$(CC) $(CFLAGS) -o logger.o -c logger.c
 	$(CC) $(CFLAGS) -o metrics.o -c metrics.c
 	$(CC) $(CFLAGS) -o admin.o -c admin.c
-	$(CC) $(CFLAGS) -o tls_tunnel.o -c tls_tunnel.c
+	$(CC) $(CFLAGS) -o tls_tunnel.o -c tls_tunnel.c -I$(QUICHE_DIR)/quiche/include
+	$(CC) $(CFLAGS) -o http2.o -c http2.c
+	$(CC) $(CFLAGS) -o http3.o -c http3.c -I$(QUICHE_DIR)/quiche/include
 	$(CC) $(CFLAGS) -o proxy.o -c Main.c
-	$(CC) $(CFLAGS) -o proxy proxy_parse.o config.o cache.o auth.o logger.o metrics.o admin.o tls_tunnel.o proxy.o -lssl -lcrypto
+	$(CC) $(CFLAGS) -o proxy proxy_parse.o config.o cache.o auth.o logger.o metrics.o admin.o tls_tunnel.o http2.o http3.o proxy.o -lssl -lcrypto $(HTTP2_LIBS) $(QUICHE_LIBS)
 
 test: proxy
 	mkdir -p tests/bin
@@ -38,11 +43,14 @@ coverage: clean
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o logger.o -c logger.c
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o metrics.o -c metrics.c
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o admin.o -c admin.c
+	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tls_tunnel.o -c tls_tunnel.c -I$(QUICHE_DIR)/quiche/include
+	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o http2.o -c http2.c
+	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o http3.o -c http3.c -I$(QUICHE_DIR)/quiche/include
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tests/bin/test_proxy_parse proxy_parse.o config.o cache.o tests/test_proxy_parse.c -I.
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tests/bin/test_config proxy_parse.o config.o cache.o tests/test_config.c -I.
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tests/bin/test_cache cache.o config.o tests/test_cache.c -I.
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o proxy.o -c Main.c
-	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o proxy proxy_parse.o config.o cache.o auth.o logger.o metrics.o admin.o tls_tunnel.o proxy.o -lssl -lcrypto
+	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o proxy proxy_parse.o config.o cache.o auth.o logger.o metrics.o admin.o tls_tunnel.o http2.o http3.o proxy.o -lssl -lcrypto $(HTTP2_LIBS) $(QUICHE_LIBS)
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tests/bin/test_integration tests/test_integration.c mock_server.o proxy_parse.o config.o cache.o -I.
 	./tests/run_tests.sh
 	gcov proxy_parse.c config.c cache.c auth.c logger.c metrics.c admin.c

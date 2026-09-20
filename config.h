@@ -18,6 +18,11 @@
 #define DEFAULT_ADMIN_PORT        8081
 #define DEFAULT_CONFIG_FILE       "/etc/proxy/proxy.conf"
 
+/* Protocol Limits */
+#define DEFAULT_MAX_HTTP1_CONNECTIONS 50
+#define DEFAULT_MAX_HTTP2_CONNECTIONS 50
+#define DEFAULT_MAX_HTTP3_CONNECTIONS 0
+
 /* Feature flags */
 #define DEFAULT_ENABLE_HTTPS      true
 #define DEFAULT_ENABLE_HTTP2      false
@@ -26,6 +31,7 @@
 #define DEFAULT_ENABLE_CACHE      true
 #define DEFAULT_ENABLE_FILTER     false
 #define DEFAULT_ENABLE_THROTTLING false
+#define DEFAULT_ENABLE_HTTP3      false
 
 /* Logging levels */
 typedef enum {
@@ -76,9 +82,15 @@ typedef struct {
     int    rate_limit_burst;
     int    bandwidth_limit_kbps;
 
+    /* Protocol Limits */
+    int    max_http1_connections;
+    int    max_http2_connections;
+    int    max_http3_connections;
+
     /* Features */
     bool   enable_https;
     bool   enable_http2;
+    bool   enable_http3;
     
     /* TLS */
     bool   tls_verify_peer;

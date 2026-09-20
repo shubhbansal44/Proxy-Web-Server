@@ -1,4 +1,5 @@
 #include "tls_tunnel.h"
+#include "http2.h"
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -113,6 +114,19 @@ static int sni_callback(SSL *s, int *al, void *arg) {
     return SSL_TLSEXT_ERR_OK;
 }
 
+static const char *alpn_protos = "\x02h2\x08http/1.1";
+
+static int alpn_select_cb(SSL *ssl, const unsigned char **out, unsigned char *outlen,
+                          const unsigned char *in, unsigned int inlen, void *arg) {
+    int r = SSL_select_next_proto((unsigned char **)out, outlen,
+                                  (const unsigned char*)alpn_protos, strlen(alpn_protos),
+                                  in, inlen);
+    if (r == SSL_TLSEXT_ERR_OK) {
+        return SSL_TLSEXT_ERR_OK;
+    }
+    return SSL_TLSEXT_ERR_NOACK;
+}
+
 void InitOpenSSL() {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_load_error_strings();
@@ -150,6 +164,10 @@ void InitOpenSSL() {
     
     // SNI callback assignment
     SSL_CTX_set_tlsext_servername_callback(server_ctx, sni_callback);
+    
+    // ALPN callback for HTTP/2 negotiation
+    SSL_CTX_set_alpn_select_cb(server_ctx, alpn_select_cb, NULL);
+    SSL_CTX_set_alpn_protos(client_ctx_out, (unsigned char *)alpn_protos, strlen(alpn_protos));
 }
 
 void CleanupOpenSSL() {
@@ -181,6 +199,40 @@ void CleanupOpenSSL() {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     EVP_cleanup();
 #endif
+}
+
+SSL* tls_connect_upstream(const char* host, int port, int *fdout) {
+    int end_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (end_socket < 0) return NULL;
+    struct hostent *host_info = gethostbyname(host);
+    if (!host_info) {
+        close(end_socket);
+        return NULL;
+    }
+    struct sockaddr_in end_addr;
+    memset(&end_addr, 0, sizeof(end_addr));
+    end_addr.sin_family = AF_INET;
+    end_addr.sin_port = htons(port);
+    memcpy(&end_addr.sin_addr, host_info->h_addr_list[0], host_info->h_length);
+    if (connect(end_socket, (struct sockaddr *)&end_addr, sizeof(end_addr)) < 0) {
+        close(end_socket);
+        return NULL;
+    }
+    SSL *server_ssl = SSL_new(client_ctx_out);
+    SSL_set_fd(server_ssl, end_socket);
+    SSL_set_tlsext_host_name(server_ssl, host);
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L
+    if (g_config.tls_verify_peer) {
+        SSL_set1_host(server_ssl, host);
+    }
+#endif
+    if (SSL_connect(server_ssl) <= 0) {
+        SSL_free(server_ssl);
+        close(end_socket);
+        return NULL;
+    }
+    if (fdout) *fdout = end_socket;
+    return server_ssl;
 }
 
 int HandleConnect(int client_socket, const char *host, int port) {
@@ -241,6 +293,28 @@ int HandleConnect(int client_socket, const char *host, int port) {
         SSL_free(server_ssl);
         close(end_socket);
         return -1;
+    }
+
+    // Log ALPN negotiated protocol for observability
+    const char *alpn_client = NULL;
+    unsigned int alpn_client_len = 0;
+    SSL_get0_alpn_selected(client_ssl, (const unsigned char **)&alpn_client, &alpn_client_len);
+    if (alpn_client_len > 0) {
+        LOG_INFO("ALPN protocol selected for client connection: %.*s", alpn_client_len, alpn_client);
+    }
+
+    if (alpn_client_len == 2 && strncmp((const char*)alpn_client, "h2", 2) == 0) {
+        // route to HTTP/2 proxy processing block instead of dumb pipe
+        handle_http2_connection(client_ssl, server_ssl, host, port, client_ctx_out);
+        close(end_socket);
+        return 0; // After handling
+    }
+
+    const char *alpn_server = NULL;
+    unsigned int alpn_server_len = 0;
+    SSL_get0_alpn_selected(server_ssl, (const unsigned char **)&alpn_server, &alpn_server_len);
+    if (alpn_server_len > 0) {
+        LOG_INFO("ALPN protocol selected for server connection: %.*s", alpn_server_len, alpn_server);
     }
 
     set_nonblock(client_socket);

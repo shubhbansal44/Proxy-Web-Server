@@ -10,3 +10,5 @@ void CleanupOpenSSL();
 int HandleConnect(int client_socket, const char *host, int port);
 
 #endif
+
+SSL* tls_connect_upstream(const char* host, int port, int *fdout);
