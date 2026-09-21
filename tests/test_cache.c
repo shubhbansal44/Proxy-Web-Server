@@ -1,7 +1,7 @@
 #include <unistd.h>
 #define TEST_FRAMEWORK_IMPL
 #include "test_framework.h"
-#include "../cache.h"
+#include "src/cache.h"
 #include <string.h>
 
 ProxyConfig g_config;

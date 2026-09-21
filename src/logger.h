@@ -42,6 +42,7 @@ typedef struct {
 
 bool logger_init(const LoggerConfig* config);
 void logger_shutdown(void);
+void logger_set_level(LogLevelEnum level);
 void logger_log(LogLevelEnum level, const char* file, int line, const char* func, const char* fmt, ...);
 void logger_access_log(const char* client_ip, int status_code, size_t response_size, 
                        const char* method, const char* url, double elapsed_ms, 

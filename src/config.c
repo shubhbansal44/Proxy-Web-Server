@@ -209,6 +209,12 @@ int config_load_file(ProxyConfig *cfg, const char *path) {
                                     strcmp(value, "1") == 0);
             } else if (strcmp(key, "log_max_size_mb") == 0) {
                 cfg->log_max_size_mb = atoi(value);
+            } else if (strcmp(key, "max_http1_connections") == 0) {
+                cfg->max_http1_connections = atoi(value);
+            } else if (strcmp(key, "max_http2_connections") == 0) {
+                cfg->max_http2_connections = atoi(value);
+            } else if (strcmp(key, "max_http3_connections") == 0) {
+                cfg->max_http3_connections = atoi(value);
             } else if (strcmp(key, "enable_throttling") == 0) {
                 cfg->enable_throttling = (strcasecmp(value, "true") == 0 || 
                                          strcmp(value, "1") == 0);
@@ -224,6 +230,18 @@ int config_load_file(ProxyConfig *cfg, const char *path) {
             } else if (strcmp(key, "enable_http2") == 0) {
                 cfg->enable_http2 = (strcasecmp(value, "true") == 0 || 
                                     strcmp(value, "1") == 0);
+            } else if (strcmp(key, "enable_http3") == 0) {
+                cfg->enable_http3 = (strcasecmp(value, "true") == 0 || 
+                                    strcmp(value, "1") == 0);
+            } else if (strcmp(key, "tls_verify_peer") == 0) {
+                cfg->tls_verify_peer = (strcasecmp(value, "true") == 0 || 
+                                       strcmp(value, "1") == 0);
+            } else if (strcmp(key, "ca_bundle_file") == 0) {
+                strncpy(cfg->ca_bundle_file, value, sizeof(cfg->ca_bundle_file) - 1);
+                cfg->ca_bundle_file[sizeof(cfg->ca_bundle_file) - 1] = '\0';
+            } else if (strcmp(key, "crl_file") == 0) {
+                strncpy(cfg->crl_file, value, sizeof(cfg->crl_file) - 1);
+                cfg->crl_file[sizeof(cfg->crl_file) - 1] = '\0';
             } else if (strcmp(key, "enable_filter") == 0) {
                 cfg->enable_filter = (strcasecmp(value, "true") == 0 || 
                                      strcmp(value, "1") == 0);
@@ -265,6 +283,15 @@ void config_apply_env(ProxyConfig *cfg) {
     }
     if ((env_val = getenv("PROXY_MAX_BYTES")) != NULL) {
         cfg->max_bytes = atoi(env_val);
+    }
+    if ((env_val = getenv("PROXY_MAX_HTTP1_CONNECTIONS")) != NULL) {
+        cfg->max_http1_connections = atoi(env_val);
+    }
+    if ((env_val = getenv("PROXY_MAX_HTTP2_CONNECTIONS")) != NULL) {
+        cfg->max_http2_connections = atoi(env_val);
+    }
+    if ((env_val = getenv("PROXY_MAX_HTTP3_CONNECTIONS")) != NULL) {
+        cfg->max_http3_connections = atoi(env_val);
     }
     if ((env_val = getenv("PROXY_MAX_CACHE_SIZE")) != NULL) {
         cfg->max_cache_size = atoll(env_val);
@@ -338,6 +365,22 @@ void config_apply_env(ProxyConfig *cfg) {
         cfg->enable_http2 = (strcasecmp(env_val, "true") == 0 || 
                             strcmp(env_val, "1") == 0);
     }
+    if ((env_val = getenv("PROXY_ENABLE_HTTP3")) != NULL) {
+        cfg->enable_http3 = (strcasecmp(env_val, "true") == 0 || 
+                            strcmp(env_val, "1") == 0);
+    }
+    if ((env_val = getenv("PROXY_TLS_VERIFY_PEER")) != NULL) {
+        cfg->tls_verify_peer = (strcasecmp(env_val, "true") == 0 || 
+                               strcmp(env_val, "1") == 0);
+    }
+    if ((env_val = getenv("PROXY_CA_BUNDLE_FILE")) != NULL) {
+        strncpy(cfg->ca_bundle_file, env_val, sizeof(cfg->ca_bundle_file) - 1);
+        cfg->ca_bundle_file[sizeof(cfg->ca_bundle_file) - 1] = '\0';
+    }
+    if ((env_val = getenv("PROXY_CRL_FILE")) != NULL) {
+        strncpy(cfg->crl_file, env_val, sizeof(cfg->crl_file) - 1);
+        cfg->crl_file[sizeof(cfg->crl_file) - 1] = '\0';
+    }
     if ((env_val = getenv("PROXY_ENABLE_FILTER")) != NULL) {
         cfg->enable_filter = (strcasecmp(env_val, "true") == 0 || 
                              strcmp(env_val, "1") == 0);
@@ -384,6 +427,10 @@ int config_apply_args(ProxyConfig *cfg, int argc, char *argv[]) {
                            "  --bandwidth-limit=N     Bandwidth limit in kbps\n"
                            "  --enable-https          Enable HTTPS CONNECT\n"
                            "  --enable-http2          Enable HTTP/2 support\n"
+                           "  --enable-http3          Enable HTTP/3 support\n"
+                           "  --tls-verify-peer=0/1   Verify TLS peers (default: 1)\n"
+                           "  --ca-bundle-file=FILE   CA bundle file for TLS\n"
+                           "  --crl-file=FILE         CRL file for TLS\n"
                            "  --enable-filter         Enable content filtering\n",
                            argv[0], DEFAULT_PORT, DEFAULT_BIND_ADDRESS,
                            DEFAULT_MAX_CLIENTS, DEFAULT_MAX_BYTES,
@@ -405,6 +452,8 @@ int config_apply_args(ProxyConfig *cfg, int argc, char *argv[]) {
                     cfg->enable_https = true;
                 } else if (strcmp(arg, "enable-http2") == 0) {
                     cfg->enable_http2 = true;
+                } else if (strcmp(arg, "enable-http3") == 0) {
+                    cfg->enable_http3 = true;
                 } else if (strcmp(arg, "enable-filter") == 0) {
                     cfg->enable_filter = true;
                 } else {
@@ -426,6 +475,12 @@ int config_apply_args(ProxyConfig *cfg, int argc, char *argv[]) {
                     cfg->max_clients = atoi(value);
                 } else if (strcmp(key, "max-bytes") == 0) {
                     cfg->max_bytes = atoi(value);
+                } else if (strcmp(key, "max-http1-connections") == 0) {
+                    cfg->max_http1_connections = atoi(value);
+                } else if (strcmp(key, "max-http2-connections") == 0) {
+                    cfg->max_http2_connections = atoi(value);
+                } else if (strcmp(key, "max-http3-connections") == 0) {
+                    cfg->max_http3_connections = atoi(value);
                 } else if (strcmp(key, "cache-size") == 0) {
                     cfg->max_cache_size = atoll(value);
                 } else if (strcmp(key, "element-size") == 0) {
@@ -457,6 +512,17 @@ int config_apply_args(ProxyConfig *cfg, int argc, char *argv[]) {
                     cfg->rate_limit_burst = atoi(value);
                 } else if (strcmp(key, "bandwidth-limit") == 0) {
                     cfg->bandwidth_limit_kbps = atoi(value);
+                } else if (strcmp(key, "tls-verify-peer") == 0) {
+                    cfg->tls_verify_peer = (strcasecmp(value, "true") == 0 || 
+                                           strcmp(value, "1") == 0);
+                } else if (strcmp(key, "ca-bundle-file") == 0) {
+                    strncpy(cfg->ca_bundle_file, value, sizeof(cfg->ca_bundle_file) - 1);
+                    cfg->ca_bundle_file[sizeof(cfg->ca_bundle_file) - 1] = '\0';
+                } else if (strcmp(key, "crl-file") == 0) {
+                    strncpy(cfg->crl_file, value, sizeof(cfg->crl_file) - 1);
+                    cfg->crl_file[sizeof(cfg->crl_file) - 1] = '\0';
+                } else if (strcmp(key, "config") == 0) {
+                    // Handled early in Main.c
                 } else {
                     fprintf(stderr, "Unknown option: %s\n", argv[i]);
                     *eq = '='; // Restore the string
@@ -551,7 +617,7 @@ int config_validate(const ProxyConfig *cfg) {
     }
     
     // Validate log level
-    LogLevel level = log_level_from_string(cfg->log_level);
+    int level = (int)log_level_from_string(cfg->log_level);
     if (level < 0) {
         fprintf(stderr, "Invalid log level: %s (must be DEBUG, INFO, WARN, or ERROR)\n", 
                 cfg->log_level);
@@ -600,6 +666,9 @@ void config_print(const ProxyConfig *cfg) {
     printf("Limits:\n");
     printf("  Max Clients: %d\n", cfg->max_clients);
     printf("  Max Request Size: %zu bytes\n", cfg->max_bytes);
+    printf("  Max HTTP/1 Conns: %d\n", cfg->max_http1_connections);
+    printf("  Max HTTP/2 Conns: %d\n", cfg->max_http2_connections);
+    printf("  Max HTTP/3 Conns: %d\n", cfg->max_http3_connections);
     printf("  Max Cache Size: %zu bytes (%zu MB)\n", 
            cfg->max_cache_size, cfg->max_cache_size / (1024 * 1024));
     printf("  Max Element Size: %zu bytes\n", cfg->max_element_size);
@@ -643,7 +712,9 @@ void config_print(const ProxyConfig *cfg) {
     printf("  HTTPS CONNECT: %s\n", cfg->enable_https ? "true" : "false");
     printf("  TLS Verify Peer: %s\n", cfg->tls_verify_peer ? "true" : "false");
     if (cfg->ca_bundle_file[0]) printf("  CA Bundle File: %s\n", cfg->ca_bundle_file);
+    if (cfg->crl_file[0]) printf("  CRL File: %s\n", cfg->crl_file);
     printf("  HTTP/2: %s\n", cfg->enable_http2 ? "true" : "false");
+    printf("  HTTP/3: %s\n", cfg->enable_http3 ? "true" : "false");
     printf("  Content Filtering: %s\n", cfg->enable_filter ? "true" : "false");
     printf("==========================\n");
 }
@@ -673,4 +744,112 @@ const char *log_level_to_string(LogLevel level) {
         case LOG_ERROR: return "ERROR";
         default:        return "UNKNOWN";
     }
+}
+#include <sys/inotify.h>
+#include <pthread.h>
+#include "logger.h"
+
+static void *hot_reload_thread(void *arg) {
+    char *config_path = (char *)arg;
+    int fd = inotify_init();
+    if (fd < 0) {
+        LOG_ERROR("hot_reload: inotify_init failed");
+        free(config_path);
+        return NULL;
+    }
+    
+    int wd = inotify_add_watch(fd, config_path, IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO);
+    // Note: Since IN_MOVED_TO and VIM saving can trigger dir changes, 
+    // basic inotify directly on the file might get IN_IGNORED if file is replaced.
+    // Real robust watcher watches the dir. For simple requirements, we just watch the file and if we get IN_IGNORED we re-add.
+    
+    if (wd < 0) {
+        LOG_WARN("hot_reload: could not watch config file %s", config_path);
+        close(fd);
+        free(config_path);
+        return NULL;
+    }
+
+    char buffer[1024];
+    while (1) {
+        int length = read(fd, buffer, sizeof(buffer));
+        if (length < 0) break;
+        
+        int i = 0;
+        int should_reload = 0;
+        int watch_removed = 0;
+        
+        while (i < length) {
+            struct inotify_event *event = (struct inotify_event *)&buffer[i];
+            if (event->mask & (IN_MODIFY | IN_CLOSE_WRITE)) {
+                should_reload = 1;
+            }
+            if (event->mask & (IN_IGNORED)) {
+                watch_removed = 1;
+            }
+            i += sizeof(struct inotify_event) + event->len;
+        }
+
+        if (watch_removed) {
+            // File was probably replaced by sed/vim. Need to wait a tiny bit and re-add watch.
+            usleep(100000); // 100ms
+            wd = inotify_add_watch(fd, config_path, IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO);
+            if (wd >= 0) {
+                should_reload = 1;
+            }
+        }
+        
+        if (should_reload) {
+            LOG_INFO("Config file changed, hot-reloading safe parameters...");
+            ProxyConfig new_cfg;
+            
+            // Start from current config to preserve non-loaded states (e.g. CLI args for non-safe parts)
+            memcpy(&new_cfg, &g_config, sizeof(ProxyConfig));
+            
+            // Initialize a fresh one to parse into, then merge safe fields
+            ProxyConfig parsed_cfg;
+            config_init_defaults(&parsed_cfg);
+            if (config_load_file(&parsed_cfg, config_path) == 0) {
+                config_apply_env(&parsed_cfg);
+                
+                // --- Apply Safe Parameters ---
+                strncpy(g_config.log_level, parsed_cfg.log_level, sizeof(g_config.log_level));
+                g_config.max_cache_size = parsed_cfg.max_cache_size;
+                g_config.max_element_size = parsed_cfg.max_element_size;
+                g_config.enable_cache = parsed_cfg.enable_cache;
+                g_config.enable_throttling = parsed_cfg.enable_throttling;
+                g_config.rate_limit_rps = parsed_cfg.rate_limit_rps;
+                g_config.rate_limit_burst = parsed_cfg.rate_limit_burst;
+                g_config.bandwidth_limit_kbps = parsed_cfg.bandwidth_limit_kbps;
+                g_config.enable_filter = parsed_cfg.enable_filter;
+                strncpy(g_config.log_file, parsed_cfg.log_file, sizeof(g_config.log_file));
+                
+                // Update logger level runtime
+                LogLevelEnum l_enum = LOG_LEVEL_INFO;
+                if (!strcmp(g_config.log_level, "DEBUG")) l_enum = LOG_LEVEL_DEBUG;
+                else if (!strcmp(g_config.log_level, "WARN")) l_enum = LOG_LEVEL_WARN;
+                else if (!strcmp(g_config.log_level, "ERROR")) l_enum = LOG_LEVEL_ERROR;
+                else if (!strcmp(g_config.log_level, "CRITICAL")) l_enum = LOG_LEVEL_CRITICAL;
+                logger_set_level(l_enum);
+                
+                LOG_INFO("Hot-reload completed.");
+            }
+        }
+    }
+    
+    close(fd);
+    free(config_path);
+    return NULL;
+}
+
+int config_start_hot_reload(const char *config_path) {
+    if (!config_path) return -1;
+    char *path = strdup(config_path);
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, hot_reload_thread, path) != 0) {
+        free(path);
+        return -1;
+    }
+    pthread_detach(tid);
+    return 0;
 }

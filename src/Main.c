@@ -93,11 +93,15 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
     LOG_ERROR("HandleRequest: Error occured While Establising Parsed request connection!\n");
   }
 
-  if (ParsedHeader_get(CLIENT_PARSED_REQUEST, "Host") == NULL)
+  struct ParsedHeader *h_hdr = ParsedHeader_get(CLIENT_PARSED_REQUEST, "Host");
+  if (CLIENT_PARSED_REQUEST->host != NULL)
   {
-    if (ParsedHeader_set(CLIENT_PARSED_REQUEST, "Host", CLIENT_PARSED_REQUEST->host) < 0)
+    if (h_hdr == NULL || strstr(h_hdr->value, "localhost") != NULL || strstr(h_hdr->value, "127.0.0.1") != NULL)
     {
-      LOG_ERROR("HandleRequest: Error occured while setting host in Parsed Request header!\n");
+      if (ParsedHeader_set(CLIENT_PARSED_REQUEST, "Host", CLIENT_PARSED_REQUEST->host) < 0)
+      {
+        LOG_ERROR("HandleRequest: Error occured while setting host in Parsed Request header!\n");
+      }
     }
   }
 
@@ -404,7 +408,17 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
 
     if (parse_result < 0)
     {
+      if (strncmp(BUFFER, "GET /", 5) == 0 && strncmp(BUFFER, "GET /http", 9) != 0) {
+        // Deliberate drop for incomplete relative paths (like /favicon.ico) so they do not emit 400 error logs or crash.
+        close(SOCKET);
+        free(BUFFER);
+        free(REQUEST);
+        if (PARSED_REQUEST) ParsedRequest_destroy(PARSED_REQUEST);
+        sem_post(&SEMAPHORE);
+        return NULL;
+      }
       LOG_INFO("Parsing failed!");
+      ThrowError(SOCKET, 400);
       response_status = 400;
     }
     else
@@ -508,36 +522,41 @@ int main(int argc, char *argv[])
   signal(SIGINT, handle_signal);
   signal(SIGTERM, handle_signal);
 
+  const char *config_file = getenv("PROXY_CONFIG_FILE");
+  
+  // Scan argv for --config=
+  for (int i = 1; i < argc; i++) {
+      if (strncmp(argv[i], "--config=", 9) == 0) {
+          config_file = argv[i] + 9;
+          break;
+      }
+  }
+
+  if (!config_file) {
+      if (access("/etc/proxy/proxy.conf", F_OK) == 0) {
+          config_file = "/etc/proxy/proxy.conf";
+      } else {
+          config_file = "proxy.conf";
+      }
+  }
+
   // Initialize defaults
   InitOpenSSL();
   config_init_defaults(&g_config);
-  config_load_file(&g_config, "/etc/proxy/proxy.conf");
+  config_load_file(&g_config, config_file);
   config_apply_env(&g_config);
+  
+  // Start hot reload
+  config_start_hot_reload(config_file);
   
   int CLIENT_SOCKET_ID, CLIENT_LENGTH;
   struct sockaddr_in SERVER_ADDR, CLIENT_ADDR;
   sem_init(&SEMAPHORE, 0, g_config.max_clients);
   Cache_init();
 
-  if (argc == 2 && (argv[1][0] == '-' || argv[1][0] == '/' || isdigit(argv[1][0])))
+  if (argc == 2 && isdigit(argv[1][0]))
   {
-    // Preserve positional fallback if numeric; also support --port=N
-    if (strncmp(argv[1], "--port=", 7) == 0) {
-      g_config.port = atoi(argv[1] + 7);
-    } else if (strncmp(argv[1], "--max-clients=", 14) == 0) {
-      g_config.max_clients = atoi(argv[1] + 14);
-    } else if (strncmp(argv[1], "--cache-size=", 13) == 0) {
-      g_config.max_cache_size = atol(argv[1] + 13);
-    } else if (strncmp(argv[1], "--log-level=", 12) == 0) {
-      strncpy(g_config.log_level, argv[1] + 12, sizeof(g_config.log_level)-1);
-    } else {
-      g_config.port = atoi(argv[1]); // positional
-    }
-  }
-  
-  // Pre-process positional numeric argument (backward compatibility)
-  if (argc == 2 && isdigit(argv[1][0])) {
-    g_config.port = atoi(argv[1]);
+    g_config.port = atoi(argv[1]); // positional
   }
   
   // Apply command-line overrides via official parser (handles --port=N etc.)

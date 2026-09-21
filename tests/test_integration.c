@@ -1,4 +1,4 @@
-#include "../config.h"
+#include "src/config.h"
 ProxyConfig g_config;
 #define TEST_FRAMEWORK_IMPL
 #include "test_framework.h"
@@ -10,7 +10,7 @@ ProxyConfig g_config;
 #include <arpa/inet.h>
 #include <signal.h>
 #include <fcntl.h>
-#include "../config.h"
+#include "src/config.h"
 
 
 pid_t start_proxy(int port) {

@@ -1,10 +1,10 @@
-#include "../config.h"
+#include "src/config.h"
 ProxyConfig g_config;
 
 
 #define TEST_FRAMEWORK_IMPL
 #include "test_framework.h"
-#include "../proxy_parse.h"
+#include "src/proxy_parse.h"
 
 void test_parsed_request_create() {
     TEST_SUITE(test_parsed_request_create);

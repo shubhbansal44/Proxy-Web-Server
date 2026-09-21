@@ -18,6 +18,12 @@ static LoggerConfig g_logger_config = {
 static FILE* g_log_fp = NULL;
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+void logger_set_level(LogLevelEnum level) {
+    pthread_mutex_lock(&g_log_mutex);
+    g_logger_config.level = level;
+    pthread_mutex_unlock(&g_log_mutex);
+}
+
 static const char* level_to_string(LogLevelEnum level) {
     switch (level) {
         case LOG_LEVEL_DEBUG: return "DEBUG";

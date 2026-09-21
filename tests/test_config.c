@@ -1,4 +1,4 @@
-#include "../config.h"
+#include "src/config.h"
 ProxyConfig g_config;
 
 

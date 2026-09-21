@@ -154,4 +154,10 @@ LogLevel log_level_from_string(const char *level);
  */
 const char *log_level_to_string(LogLevel level);
 
+/**
+ * Start hot reload thread to watch config file changes.
+ * Returns 0 on success, -1 on error.
+ */
+int config_start_hot_reload(const char *config_path);
+
 #endif /* PROXY_CONFIG_H */
