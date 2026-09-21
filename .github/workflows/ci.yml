@@ -17,7 +17,7 @@ jobs:
     - name: Set up GCC & Make
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential gcc g++ make
+        sudo apt-get install -y build-essential gcc g++ make libnghttp2-dev libssl-dev
 
     - name: Build Proxy
       run: make
@@ -35,7 +35,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential valgrind
+        sudo apt-get install -y build-essential libnghttp2-dev libssl-dev valgrind
 
     - name: Build Proxy and Tests
       run: make test
@@ -59,7 +59,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential gcc g++ make
+        sudo apt-get install -y build-essential gcc g++ make libnghttp2-dev libssl-dev
 
     - name: Run Coverage
       run: make coverage
