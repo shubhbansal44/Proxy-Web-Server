@@ -55,6 +55,10 @@ void Cache_init() {
     list_tail = NULL;
     CACHE_SIZE = 0;
     
+    if (g_config.cache_dir[0] != '\0') {
+        strncpy(g_cache_dir, g_config.cache_dir, sizeof(g_cache_dir) - 1);
+    }
+    
     struct stat st = {0};
     if (stat(g_cache_dir, &st) == -1) {
         mkdir(g_cache_dir, 0700);

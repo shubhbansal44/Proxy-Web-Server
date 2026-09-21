@@ -80,7 +80,7 @@ int ConnectEndServer(void *hostname, int port)
 
 int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQUEST, char *CLIENT_REQUEST)
 {
-  char *BUFFER = (char *)malloc(g_config.max_bytes * sizeof(char));
+  char *BUFFER = (char *)calloc(g_config.max_bytes, sizeof(char));
   strcpy(BUFFER, "GET ");
   strcat(BUFFER, CLIENT_PARSED_REQUEST->path);
   strcat(BUFFER, " ");
@@ -92,6 +92,7 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
   {
     LOG_ERROR("HandleRequest: Error occured While Establising Parsed request connection!\n");
   }
+  ParsedHeader_remove(CLIENT_PARSED_REQUEST, "Proxy-Connection");
 
   struct ParsedHeader *h_hdr = ParsedHeader_get(CLIENT_PARSED_REQUEST, "Host");
   if (CLIENT_PARSED_REQUEST->host != NULL)
