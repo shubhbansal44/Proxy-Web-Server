@@ -236,25 +236,42 @@ SSL* tls_connect_upstream(const char* host, int port, int *fdout) {
 }
 
 int HandleConnect(int client_socket, const char *host, int port) {
-    int end_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (end_socket < 0) return -1;
+    int end_socket = -1;
+    struct addrinfo hints, *res, *rp;
+    char port_str[16];
+    int ret;
 
-    struct hostent *host_info = gethostbyname(host);
-    if (!host_info) {
-        LOG_ERROR("HandleConnect: Failed to resolve %s", host);
-        close(end_socket);
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+    hints.ai_socktype = SOCK_STREAM; /* TCP socket */
+    hints.ai_flags = 0;
+    hints.ai_protocol = 0;          /* Any protocol */
+
+    ret = getaddrinfo(host, port_str, &hints, &res);
+    if (ret != 0) {
+        LOG_ERROR("HandleConnect: Failed to resolve %s: %s", host, gai_strerror(ret));
         return -1;
     }
 
-    struct sockaddr_in end_addr;
-    memset(&end_addr, 0, sizeof(end_addr));
-    end_addr.sin_family = AF_INET;
-    end_addr.sin_port = htons(port);
-    memcpy(&end_addr.sin_addr, host_info->h_addr_list[0], host_info->h_length);
+    /* Try each address until we successfully connect */
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        end_socket = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (end_socket == -1)
+            continue;
 
-    if (connect(end_socket, (struct sockaddr *)&end_addr, sizeof(end_addr)) < 0) {
-        LOG_ERROR("HandleConnect: connect failed");
+        if (connect(end_socket, rp->ai_addr, rp->ai_addrlen) != -1)
+            break; /* Success */
+
         close(end_socket);
+        end_socket = -1;
+    }
+
+    freeaddrinfo(res);
+
+    if (rp == NULL) { /* No address succeeded */
+        LOG_ERROR("HandleConnect: connect failed");
         return -1;
     }
 
@@ -338,7 +355,16 @@ int HandleConnect(int client_socket, const char *host, int port) {
                 int bytes = SSL_read(client_ssl, buf, sizeof(buf));
                 if (bytes > 0) {
                     int wbytes = SSL_write(server_ssl, buf, bytes);
-                    if (wbytes > 0) metrics_add_bytes(wbytes);
+                    if (wbytes > 0) {
+                        metrics_add_bytes(wbytes);
+                        struct sockaddr_storage addr_check;
+                        socklen_t addr_check_len = sizeof(addr_check);
+                        if (getpeername(client_socket, (struct sockaddr*)&addr_check, &addr_check_len) == 0) {
+                            if (addr_check.ss_family == AF_INET6) {
+                                metrics_add_ipv6_bytes(wbytes);
+                            }
+                        }
+                    }
                     if (wbytes <= 0) { active = 0; break; }
                 } else {
                     int err = SSL_get_error(client_ssl, bytes);
@@ -355,7 +381,16 @@ int HandleConnect(int client_socket, const char *host, int port) {
                 int bytes = SSL_read(server_ssl, buf, sizeof(buf));
                 if (bytes > 0) {
                     int wbytes = SSL_write(client_ssl, buf, bytes);
-                    if (wbytes > 0) metrics_add_bytes(wbytes);
+                    if (wbytes > 0) {
+                        metrics_add_bytes(wbytes);
+                        struct sockaddr_storage addr_check;
+                        socklen_t addr_check_len = sizeof(addr_check);
+                        if (getpeername(client_socket, (struct sockaddr*)&addr_check, &addr_check_len) == 0) {
+                            if (addr_check.ss_family == AF_INET6) {
+                                metrics_add_ipv6_bytes(wbytes);
+                            }
+                        }
+                    }
                     if (wbytes <= 0) { active = 0; break; }
                 } else {
                     int err = SSL_get_error(server_ssl, bytes);

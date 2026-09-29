@@ -64,6 +64,9 @@ typedef struct {
     char   blocklist_file[512];
     char   allow_ip_file[512];
     char   deny_ip_file[512];
+    char   url_blocklist_file[512];
+    char   content_type_blocklist_file[512];
+    char   block_page_file[512];
 
     /* Logging */
     char   log_file[512];

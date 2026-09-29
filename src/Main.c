@@ -2,6 +2,7 @@
 #include "config.h"
 #include "tls_tunnel.h"
 #include "auth.h"
+#include "filter.h"
 #include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <bits/time.h>
@@ -45,39 +46,75 @@ sem_t SEMAPHORE;
 
 int ConnectEndServer(void *hostname, int port)
 {
-  int END_SERVER_SOCKET = socket(AF_INET, SOCK_STREAM, 0);
-  if (END_SERVER_SOCKET < 0)
+  int END_SERVER_SOCKET = -1;
+  struct addrinfo hints, *res, *rp;
+  char port_str[16];
+  int ret;
+
+  snprintf(port_str, sizeof(port_str), "%d", port);
+
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+  hints.ai_socktype = SOCK_STREAM; /* TCP socket */
+  hints.ai_flags = 0;
+  hints.ai_protocol = 0;          /* Any protocol */
+
+  ret = getaddrinfo((const char *)hostname, port_str, &hints, &res);
+  if (ret != 0)
   {
-    LOG_ERROR("ConnectEndServer: Something went wrong while inializing end server socket!\n");
+    LOG_ERROR("ConnectEndServer: getaddrinfo failed: %s\n", gai_strerror(ret));
     return -1;
   }
 
-  struct hostent *HOST = gethostbyname((const char *)hostname);
-  if (HOST == NULL)
+  /* Try each address until we successfully connect */
+  for (rp = res; rp != NULL; rp = rp->ai_next)
   {
-    LOG_ERROR("ConnectEndServer: No such host exists: %s\n", (char *)hostname);
+    // Check if resolved IP is blocked
+    if (filter_is_ip_blocked(rp->ai_addr)) {
+        LOG_WARN("Resolved IP is blocked for %s", (const char*)hostname);
+        continue;
+    }
+
+    END_SERVER_SOCKET = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+    if (END_SERVER_SOCKET == -1)
+      continue;
+
+    if (connect(END_SERVER_SOCKET, rp->ai_addr, rp->ai_addrlen) != -1)
+      break; /* Success */
+
     close(END_SERVER_SOCKET);
-    return -1;
+    END_SERVER_SOCKET = -1;
   }
 
-  struct sockaddr_in END_SERVER_ADDR;
-  memset(&END_SERVER_ADDR, 0, sizeof(END_SERVER_ADDR));
-  END_SERVER_ADDR.sin_family = AF_INET;
-  END_SERVER_ADDR.sin_port = htons(port);
+  freeaddrinfo(res);
 
-  /* copy first resolved address into sin_addr */
-  memcpy(&END_SERVER_ADDR.sin_addr, HOST->h_addr_list[0], HOST->h_length);
-
-  if (connect(END_SERVER_SOCKET, (struct sockaddr *)&END_SERVER_ADDR, sizeof(END_SERVER_ADDR)) < 0)
+  if (rp == NULL) /* No address succeeded */
   {
-    LOG_ERROR("ConnectEndServer: connect to end server failed");
-    close(END_SERVER_SOCKET);
+    LOG_ERROR("ConnectEndServer: Could not connect to %s:%d\n", (const char *)hostname, port);
     return -1;
   }
 
   return END_SERVER_SOCKET;
 }
 
+/* Parse Content-Type from HTTP response headers */
+static int parse_content_type_header(const char *buf, size_t len, char *out, size_t out_size) {
+    if (!buf || len == 0 || !out || out_size == 0) return -1;
+    const char *header_start = (const char *)memmem((void *)buf, len, "Content-Type:", 13);
+    if (!header_start) return -1;
+    const char *val = header_start + 13;
+    while (val < buf + len && (*val == ' ' || *val == '\t')) val++;
+    const char *end = (const char *)memmem((void *)val, len - (val - buf), "\r\n", 2);
+    if (!end) end = (const char *)memmem((void *)val, len - (val - buf), "\n", 1);
+    if (!end) end = buf + len;
+    size_t val_len = end - val;
+    if (val_len >= out_size) val_len = out_size - 1;
+    memcpy(out, val, val_len);
+    out[val_len] = '\0';
+    char *trim = out + val_len - 1;
+    while (trim >= out && (*trim == ' ' || *trim == '\t' || *trim == '\r' || *trim == '\n')) *trim-- = '\0';
+    return 0;
+}
 int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQUEST, char *CLIENT_REQUEST)
 {
   char *BUFFER = (char *)calloc(g_config.max_bytes, sizeof(char));
@@ -144,15 +181,11 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
   size_t RESPONSE_LENGTH = 0;
 
   ssize_t BYTES_RECEIVED;
+  int ct_blocked = 0;
+  char ct_buf[256] = {0};
   while ((BYTES_RECEIVED = recv(END_SERVER_SOCKET_ID, BUFFER, g_config.max_bytes, 0)) > 0)
   {
-    ssize_t BYTES_SEND_CLIENT = send(CLIENT_SOCKET_ID, BUFFER, BYTES_RECEIVED, 0);
-    if (BYTES_SEND_CLIENT < 0)
-    {
-      LOG_ERROR("HandleRequest: send to client failed");
-      break;
-    }
-    /* append to RESPONSE buffer */
+    /* Safe bounded append (length-tracked, no strlen) */
     if (RESPONSE_LENGTH + (size_t)BYTES_RECEIVED + 1 > RESPONSE_CAPACITY)
     {
       RESPONSE_CAPACITY *= 2;
@@ -166,6 +199,34 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
     }
     memcpy(RESPONSE + RESPONSE_LENGTH, BUFFER, BYTES_RECEIVED);
     RESPONSE_LENGTH += BYTES_RECEIVED;
+
+    /* Header boundary via memmem (safe, bounded) */
+    char *hdr_end = (char *)memmem(RESPONSE, RESPONSE_LENGTH, "\r\n\r\n", 4);
+    if (!hdr_end) hdr_end = (char *)memmem(RESPONSE, RESPONSE_LENGTH, "\n\n", 2);
+
+    if (hdr_end && !ct_blocked && parse_content_type_header(RESPONSE, RESPONSE_LENGTH, ct_buf, sizeof(ct_buf)) == 0) {
+      if (filter_is_content_type_blocked(ct_buf)) {
+        ct_blocked = 1;
+        break;  /* Block: do not relay any bytes of blocked response */
+      }
+    }
+
+    /* Only stream permitted content to client */
+    if (!ct_blocked) {
+      ssize_t BYTES_SEND_CLIENT = send(CLIENT_SOCKET_ID, BUFFER, BYTES_RECEIVED, 0);
+      if (BYTES_SEND_CLIENT > 0) {
+        metrics_add_bytes(BYTES_SEND_CLIENT);
+        struct sockaddr_storage addr_check;
+        socklen_t addr_check_len = sizeof(addr_check);
+        if (getpeername(CLIENT_SOCKET_ID, (struct sockaddr*)&addr_check, &addr_check_len) == 0) {
+          if (addr_check.ss_family == AF_INET6) metrics_add_ipv6_bytes(BYTES_SEND_CLIENT);
+        }
+      }
+      if (BYTES_SEND_CLIENT < 0) {
+        perror("Error parsing from server to client");
+        break;
+      }
+    }
   }
 
   if (BYTES_RECEIVED < 0)
@@ -179,6 +240,49 @@ int HandleRequest(int CLIENT_SOCKET_ID, struct ParsedRequest *CLIENT_PARSED_REQU
       RESPONSE = TEMP;
   }
   RESPONSE[RESPONSE_LENGTH] = '\0';
+
+  /* Structural: block after loop if MIME type disallowed */
+  if (ct_blocked) {
+      const char *custom = filter_get_block_page();
+      if (!custom) custom = "<HTML><HEAD><TITLE>403 Forbidden</TITLE></HEAD><BODY><H1>403 Forbidden</H1></BODY></HTML>";
+      char block_resp[1024];
+      snprintf(block_resp, sizeof(block_resp),
+        "HTTP/1.1 403 Forbidden\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n%s",
+        strlen(custom), custom);
+      send(CLIENT_SOCKET_ID, block_resp, strlen(block_resp), 0);
+    send(CLIENT_SOCKET_ID, block_resp, strlen(block_resp), 0);
+    metrics_increment_errors();
+    free(BUFFER);
+    free(RESPONSE);
+    close(END_SERVER_SOCKET_ID);
+    return 0;
+  }
+
+  /* Post-loop safeguard for non-blocked paths */
+  char ct_buf_final[256] = {0};
+  if (parse_content_type_header(RESPONSE, RESPONSE_LENGTH, ct_buf_final, sizeof(ct_buf_final)) == 0) {
+    if (filter_is_content_type_blocked(ct_buf_final)) {
+      LOG_INFO("Blocked content type: %s", ct_buf_final);
+      const char *custom = filter_get_block_page();
+      if (!custom) custom = "<HTML><HEAD><TITLE>403 Forbidden</TITLE></HEAD><BODY><H1>403 Forbidden</H1></BODY></HTML>";
+      char block_resp[1024];
+      snprintf(block_resp, sizeof(block_resp),
+        "HTTP/1.1 403 Forbidden\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n%s",
+        strlen(custom), custom);
+      send(CLIENT_SOCKET_ID, block_resp, strlen(block_resp), 0);
+      metrics_increment_errors();
+      free(BUFFER);
+      free(RESPONSE);
+      close(END_SERVER_SOCKET_ID);
+      return 0;
+    }
+  }
 
   /* Attempt caching (use the original request string as key) */
   AddCache(RESPONSE, RESPONSE_LENGTH, CLIENT_REQUEST);
@@ -226,9 +330,20 @@ int ThrowError(int socket, int status_code)
     break;
 
   case 403:
-    snprintf(str, sizeof(str), "HTTP/1.1 403 Forbidden\r\nContent-Length: 112\r\nContent-Type: text/html\r\nConnection: keep-alive\r\nDate: %s\r\nServer: VaibhavN/14785\r\n\r\n<HTML><HEAD><TITLE>403 Forbidden</TITLE></HEAD>\n<BODY><H1>403 Forbidden</H1><br>Permission Denied\n</BODY></HTML>", currentTime);
-    LOG_INFO("403 Forbidden");
-    send(socket, str, strlen(str), 0);
+    {
+      const char *html = filter_get_block_page();
+      snprintf(str, sizeof(str), 
+               "HTTP/1.1 403 Forbidden\r\n"
+               "Content-Length: %zu\r\n"
+               "Content-Type: text/html\r\n"
+               "Connection: keep-alive\r\n"
+               "Date: %s\r\n"
+               "Server: VaibhavN/14785\r\n\r\n"
+               "%s", 
+               strlen(html), currentTime, html);
+      LOG_INFO("403 Forbidden");
+      send(socket, str, strlen(str), 0);
+    }
     break;
 
   case 404:
@@ -273,84 +388,115 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
   clock_gettime(CLOCK_MONOTONIC, &start_time);
   
   metrics_increment_requests();
+  metrics_increment_active_connections();
+  int *NEW_SOCKET_PTR = (int *)NEW_SOCKET;
+  int SOCKET = *NEW_SOCKET_PTR;
+  struct sockaddr_storage addr_check_start;
+  socklen_t addr_check_start_len = sizeof(addr_check_start);
+  if (getpeername(SOCKET, (struct sockaddr*)&addr_check_start, &addr_check_start_len) == 0) {
+      if (addr_check_start.ss_family == AF_INET6) {
+          metrics_increment_ipv6_active_connections();
+          metrics_increment_ipv6_requests();
+      }
+  }
 
   sem_wait(&SEMAPHORE);
   int CURRENT_SEMAPHORE_VALUE;
   sem_getvalue(&SEMAPHORE, &CURRENT_SEMAPHORE_VALUE);
   LOG_INFO("Currently available Sockets: %d", CURRENT_SEMAPHORE_VALUE);
 
-  int *NEW_SOCKET_PTR = (int *)NEW_SOCKET;
-  int SOCKET = *NEW_SOCKET_PTR;
   int BYTES_RECIEVED, LENGTH;
 
   char *BUFFER = (char *)calloc(g_config.max_bytes, sizeof(char));
   memset(BUFFER, 0, g_config.max_bytes);
+size_t buf_len = 0;
+   ssize_t r = recv(SOCKET, BUFFER, g_config.max_bytes, 0);
+   if (r <= 0) {
+       // Handle error or disconnect
+       close(SOCKET);
+       free(BUFFER);
+       sem_post(&SEMAPHORE);
+       return NULL;
+   }
+   buf_len = r;
 
-  // Check if it's an HTTP/2 or WebSockets or generic TLS tunnel request (for port 443 proxy)
-  // Or if it's h2c preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-  const char *H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-  
-  BYTES_RECIEVED = recv(SOCKET, BUFFER, g_config.max_bytes, MSG_PEEK);
-  
-  if (BYTES_RECIEVED > 0 && 
-      (BUFFER[0] == 0x16 || // TLS Handshake
-       (BYTES_RECIEVED >= 24 && memcmp(BUFFER, H2_PREFACE, 24) == 0))) 
-  {
-      // Explicit CONNECT is mandatory. Raw TLS/h2c detected directly on a 
-      // fresh socket instead of an HTTP/1.1 proxy payload must be rejected.
-      LOG_ERROR("Raw TLS or h2c detected without prior CONNECT. Rejecting.");
-      ThrowError(SOCKET, 400);
-      
-      // Get client IP for access log reporting before exit
-      struct sockaddr_in client_addr_fail;
-      socklen_t addr_len_fail = sizeof(client_addr_fail);
-      char client_ip_fail[INET_ADDRSTRLEN] = "UNKNOWN";
-      if (getpeername(SOCKET, (struct sockaddr*)&client_addr_fail, &addr_len_fail) == 0) {
-          inet_ntop(AF_INET, &client_addr_fail.sin_addr, client_ip_fail, INET_ADDRSTRLEN);
-      }
-      
-      clock_gettime(CLOCK_MONOTONIC, &end_time);
-      double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
-      logger_access_log(client_ip_fail, 400, 0, "UNKNOWN", "UNKNOWN", elapsed_ms, "text/html", "UNKNOWN");
-      
-      // Also grab the peek bytes to drain them
-      recv(SOCKET, BUFFER, g_config.max_bytes, 0);
-      
-      close(SOCKET);
-      free(BUFFER);
-      sem_post(&SEMAPHORE);
-      
-      return NULL;
-  }
-  else
-  {
-      BYTES_RECIEVED = recv(SOCKET, BUFFER, g_config.max_bytes, 0);
-      while (BYTES_RECIEVED > 0)
-      {
-        LENGTH = strlen(BUFFER);
-        if (strstr(BUFFER, "\r\n\r\n") == NULL)
-        {
-          BYTES_RECIEVED = recv(SOCKET, BUFFER + LENGTH, g_config.max_bytes - LENGTH, 0);
-        }
-        else
-        {
-          break;
-        }
-      }
-  }
+   // Check if it's an HTTP/2 or WebSockets or generic TLS tunnel request (for port 443 proxy)
+   // Or if it's h2c preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+   const char *H2_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+   
+   if (buf_len > 0 && 
+       (BUFFER[0] == 0x16 || // TLS Handshake
+        (buf_len >= 24 && memcmp(BUFFER, H2_PREFACE, 24) == 0))) 
+   {
+       // Explicit CONNECT is mandatory. Raw TLS/h2c detected directly on a 
+       // fresh socket instead of an HTTP/1.1 proxy payload must be rejected.
+       LOG_ERROR("Raw TLS or h2c detected without prior CONNECT. Rejecting.");
+       
+       // Get client IP for access log reporting before exit
+       struct sockaddr_storage client_addr_fail;
+       socklen_t addr_len_fail = sizeof(client_addr_fail);
+       char client_ip_fail[INET6_ADDRSTRLEN] = "UNKNOWN";
+       if (getpeername(SOCKET, (struct sockaddr*)&client_addr_fail, &addr_len_fail) == 0) {
+           if (client_addr_fail.ss_family == AF_INET) {
+               struct sockaddr_in *s = (struct sockaddr_in *)&client_addr_fail;
+               inet_ntop(AF_INET, &(s->sin_addr), client_ip_fail, sizeof(client_ip_fail));
+           } else if (client_addr_fail.ss_family == AF_INET6) {
+               struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client_addr_fail;
+               inet_ntop(AF_INET6, &(s->sin6_addr), client_ip_fail, sizeof(client_ip_fail));
+           }
+       }
+       
+       clock_gettime(CLOCK_MONOTONIC, &end_time);
+       double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+       logger_access_log(client_ip_fail, 400, 0, "UNKNOWN", "UNKNOWN", elapsed_ms, "text/html", "UNKNOWN");
+       
+       close(SOCKET);
+       free(BUFFER);
+       sem_post(&SEMAPHORE);
+       
+       return NULL;
+   }
 
-  char *REQUEST = (char *)malloc(strlen(BUFFER) * sizeof(char) + 1);
-  for (size_t i = 0; i < strlen(BUFFER); i++)
-  {
-    REQUEST[i] = BUFFER[i];
-  }
+   // Now we have HTTP data. We need to read until we get the full headers.
+   while (buf_len < g_config.max_bytes) {
+       // Check if we have received the end of headers
+       char *ptr = (char *)memmem(BUFFER, buf_len, "\r\n\r\n", 4);
+       if (ptr != NULL) {
+           break;
+       }
+       // Otherwise, read more
+       ssize_t r = recv(SOCKET, BUFFER + buf_len, g_config.max_bytes - buf_len, 0);
+       if (r <= 0) {
+           break;
+       }
+       buf_len += r;
+   }
+   BYTES_RECIEVED = buf_len;
 
-  // Get client IP for access log
-  struct sockaddr_in client_addr;
+   char *REQUEST = (char *)malloc(BYTES_RECIEVED + 1);
+   if (REQUEST) {
+       memcpy(REQUEST, BUFFER, BYTES_RECIEVED);
+       REQUEST[BYTES_RECIEVED] = '\0';
+   } else {
+       fprintf(stderr, "Failed to allocate memory for REQUEST\n");
+       close(SOCKET);
+       free(BUFFER);
+       sem_post(&SEMAPHORE);
+       return NULL;
+   }
+
+   // Get client IP for access log
+  struct sockaddr_storage client_addr;
   socklen_t addr_len = sizeof(client_addr);
-  char client_ip[INET_ADDRSTRLEN] = "UNKNOWN";
+  char client_ip[INET6_ADDRSTRLEN] = "UNKNOWN";
   if (getpeername(SOCKET, (struct sockaddr*)&client_addr, &addr_len) == 0) {
-      inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+      if (client_addr.ss_family == AF_INET) {
+          struct sockaddr_in *s = (struct sockaddr_in *)&client_addr;
+          inet_ntop(AF_INET, &(s->sin_addr), client_ip, sizeof(client_ip));
+      } else if (client_addr.ss_family == AF_INET6) {
+          struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client_addr;
+          inet_ntop(AF_INET6, &(s->sin6_addr), client_ip, sizeof(client_ip));
+      }
   }
 
   int response_status = 200;
@@ -376,6 +522,66 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
       }
   }
 
+  if (parse_result >= 0) {
+      // Check auth if enabled
+      if (g_config.enable_auth) {
+        struct ParsedHeader *auth_hdr = ParsedHeader_get(PARSED_REQUEST, "Proxy-Authorization");
+        const char *auth_val = auth_hdr ? auth_hdr->value : NULL;
+        
+        if (!check_basic_auth(auth_val)) {
+            ThrowError(SOCKET, 407);
+            response_status = 407;
+            
+            clock_gettime(CLOCK_MONOTONIC, &end_time);
+            double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+            logger_access_log(client_ip, response_status, 0, method, url, elapsed_ms, "text/html", trace_id_str);
+            
+            ParsedRequest_destroy(PARSED_REQUEST);
+            free(BUFFER);
+            free(REQUEST);
+            close(SOCKET);
+            sem_post(&SEMAPHORE);
+            return NULL;
+        }
+      }
+
+      // Check domain filtering
+      if (PARSED_REQUEST->host && filter_is_domain_blocked(PARSED_REQUEST->host)) {
+          LOG_WARN("Domain blocked: %s", PARSED_REQUEST->host);
+          ThrowError(SOCKET, 403);
+          response_status = 403;
+          
+          clock_gettime(CLOCK_MONOTONIC, &end_time);
+          double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+          logger_access_log(client_ip, response_status, 0, method, url, elapsed_ms, "text/html", trace_id_str);
+          
+          ParsedRequest_destroy(PARSED_REQUEST);
+          free(BUFFER);
+          free(REQUEST);
+          close(SOCKET);
+          sem_post(&SEMAPHORE);
+          return NULL;
+      }
+
+      // Check URL filtering
+      if (PARSED_REQUEST->path && filter_is_url_blocked(PARSED_REQUEST->path)) {
+          LOG_WARN("URL blocked: %s", PARSED_REQUEST->path);
+          ThrowError(SOCKET, 403);
+          response_status = 403;
+          
+          clock_gettime(CLOCK_MONOTONIC, &end_time);
+          double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
+          logger_access_log(client_ip, response_status, 0, method, url, elapsed_ms, "text/html", trace_id_str);
+          
+          ParsedRequest_destroy(PARSED_REQUEST);
+          free(BUFFER);
+          free(REQUEST);
+          close(SOCKET);
+          sem_post(&SEMAPHORE);
+          return NULL;
+      }
+  }
+
   CacheModule *CACHE = FindCache(REQUEST);
   if (CACHE != NULL)
   {
@@ -385,14 +591,24 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
     char RESPONSE[g_config.max_bytes];
     while (POS < SIZE)
     {
-      memset(RESPONSE, 0, g_config.max_bytes);
-      for (size_t i = 0; i < g_config.max_bytes; i++)
+      bzero(RESPONSE, g_config.max_bytes);
+      int response_size = 0;
+      for (int i = 0; i < g_config.max_bytes && POS < SIZE; i++, POS++)
       {
         RESPONSE[i] = CACHE->DATA[POS];
-        POS++;
         response_size++;
       }
-      send(SOCKET, RESPONSE, g_config.max_bytes, 0);
+      ssize_t sent = send(SOCKET, RESPONSE, response_size, 0);
+      if (sent > 0) {
+          metrics_add_bytes(sent);
+          struct sockaddr_storage addr_check;
+          socklen_t addr_check_len = sizeof(addr_check);
+          if (getpeername(SOCKET, (struct sockaddr*)&addr_check, &addr_check_len) == 0) {
+              if (addr_check.ss_family == AF_INET6) {
+                  metrics_add_ipv6_bytes(sent);
+              }
+          }
+      }
     }
     LOG_INFO("Data retrived from cache");
     LOG_INFO("%s\n", RESPONSE);
@@ -425,27 +641,7 @@ void *THREAD_ROUTINE(void *NEW_SOCKET)
     else
     {
 
-      // Check auth if enabled
-      if (g_config.enable_auth) {
-        struct ParsedHeader *auth_hdr = ParsedHeader_get(PARSED_REQUEST, "Proxy-Authorization");
-        const char *auth_val = auth_hdr ? auth_hdr->value : NULL;
-        
-        if (!check_basic_auth(auth_val)) {
-            ThrowError(SOCKET, 407);
-            response_status = 407;
-            
-            clock_gettime(CLOCK_MONOTONIC, &end_time);
-            double elapsed_ms = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_nsec - start_time.tv_nsec) / 1000000.0;
-            logger_access_log(client_ip, response_status, 0, method, url, elapsed_ms, "text/html", trace_id_str);
-            
-            ParsedRequest_destroy(PARSED_REQUEST);
-            free(BUFFER);
-            free(REQUEST);
-            close(SOCKET);
-            sem_post(&SEMAPHORE);
-            return NULL;
-        }
-      }
+      // Filters and Auth moved above FindCache
 
       memset(BUFFER, 0, g_config.max_bytes);
 if (!strcmp(PARSED_REQUEST->method, "GET"))
@@ -496,6 +692,16 @@ if (!strcmp(PARSED_REQUEST->method, "GET"))
   {
     LOG_INFO("Request didn't received, user may be disconnected");
   }
+
+  struct sockaddr_storage addr_check;
+  socklen_t addr_check_len = sizeof(addr_check);
+  if (getpeername(SOCKET, (struct sockaddr*)&addr_check, &addr_check_len) == 0) {
+      if (addr_check.ss_family == AF_INET6) {
+          metrics_decrement_ipv6_active_connections();
+      }
+  }
+  metrics_decrement_active_connections();
+
   shutdown(SOCKET, SHUT_RDWR);
   close(SOCKET);
   free(BUFFER);
@@ -550,8 +756,9 @@ int main(int argc, char *argv[])
   // Start hot reload
   config_start_hot_reload(config_file);
   
-  int CLIENT_SOCKET_ID, CLIENT_LENGTH;
-  struct sockaddr_in SERVER_ADDR, CLIENT_ADDR;
+int CLIENT_SOCKET_ID, CLIENT_LENGTH;
+struct sockaddr_storage SERVER_ADDR;   // supports IPv4 and IPv6
+struct sockaddr_storage CLIENT_ADDR;
   sem_init(&SEMAPHORE, 0, g_config.max_clients);
   Cache_init();
 
@@ -581,6 +788,7 @@ int main(int argc, char *argv[])
   
   // Initialize Auth & ACL subsystem
   auth_init(&g_config);
+  filter_init(&g_config);
   
   // Initialize Observability subsystem
   LoggerConfig log_cfg;
@@ -619,7 +827,13 @@ int main(int argc, char *argv[])
 
   start_http3_server(g_config.port);
 
-  PROXY_SOCKET_ID = socket(AF_INET, SOCK_STREAM, 0);
+   if (g_config.enable_ipv6) {
+       PROXY_SOCKET_ID = socket(AF_INET6, SOCK_STREAM, 0);
+       int v6only = 0;
+       setsockopt(PROXY_SOCKET_ID, IPPROTO_IPV6, IPV6_V6ONLY, (void *)&v6only, sizeof(v6only));
+   } else {
+       PROXY_SOCKET_ID = socket(AF_INET, SOCK_STREAM, 0);
+   }
   if (PROXY_SOCKET_ID < 0)
   {
     LOG_INFO("Failed to create Proxy Socket ID!");
@@ -633,17 +847,27 @@ int main(int argc, char *argv[])
     LOG_INFO("Execution failed while setting Socket option(setsockopt)!");
   }
 
-  memset((char *)&SERVER_ADDR, 0, sizeof(SERVER_ADDR));
-  SERVER_ADDR.sin_family = AF_INET;
-  SERVER_ADDR.sin_port = htons(g_config.port);
-  SERVER_ADDR.sin_addr.s_addr = INADDR_ANY;
+memset(&SERVER_ADDR, 0, sizeof(SERVER_ADDR));
+   socklen_t bind_len;
+   if (g_config.enable_ipv6) {
+       struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&SERVER_ADDR;
+       addr6->sin6_family = AF_INET6;
+       addr6->sin6_port = htons(g_config.port);
+       addr6->sin6_addr = in6addr_any;
+       bind_len = sizeof(struct sockaddr_in6);
+   } else {
+       struct sockaddr_in *addr4 = (struct sockaddr_in *)&SERVER_ADDR;
+       addr4->sin_family = AF_INET;
+       addr4->sin_port = htons(g_config.port);
+       addr4->sin_addr.s_addr = INADDR_ANY;
+       bind_len = sizeof(struct sockaddr_in);
+   }
 
-  if (bind(PROXY_SOCKET_ID, (struct sockaddr *)&SERVER_ADDR,
-           sizeof(SERVER_ADDR)) < 0)
-  {
-    LOG_INFO("Port is not available!");
-    exit(0);
-  }
+   if (bind(PROXY_SOCKET_ID, (struct sockaddr *)&SERVER_ADDR, bind_len) < 0)
+   {
+     LOG_INFO("Port is not available!");
+     exit(0);
+   }
   LOG_INFO("Binding on Port: %d", g_config.port);
   int LISTEN_STATUS = listen(PROXY_SOCKET_ID, g_config.max_clients);
 
@@ -656,45 +880,55 @@ int main(int argc, char *argv[])
   int ITERATOR = 0;
   int *CONNECTED_SOCKET_ID = (int *)malloc(sizeof(int) * g_config.max_clients);
 
-  while (1)
-  {
-    memset((char *)&CLIENT_ADDR, 0, sizeof(CLIENT_ADDR));
-    CLIENT_LENGTH = sizeof(CLIENT_ADDR);
-    CLIENT_SOCKET_ID = accept(PROXY_SOCKET_ID, (struct sockaddr *)&CLIENT_ADDR,
-                              (socklen_t *)&CLIENT_LENGTH);
+while (1)
+   {
+     memset((char *)&CLIENT_ADDR, 0, sizeof(CLIENT_ADDR));
+     CLIENT_LENGTH = sizeof(CLIENT_ADDR);
+     CLIENT_SOCKET_ID = accept(PROXY_SOCKET_ID, (struct sockaddr *)&CLIENT_ADDR,
+                               (socklen_t *)&CLIENT_LENGTH);
 
-    if (CLIENT_SOCKET_ID < 0)
-    {
-      LOG_INFO("Unable to connect new user!");
-      exit(1);
-    }
-    else
-    {
-      CONNECTED_SOCKET_ID[ITERATOR] = CLIENT_SOCKET_ID;
-    }
+     if (CLIENT_SOCKET_ID < 0)
+     {
+       LOG_INFO("Unable to connect new user!");
+       exit(1);
+     }
+     else
+     {
+       CONNECTED_SOCKET_ID[ITERATOR] = CLIENT_SOCKET_ID;
+     }
 
-    struct sockaddr_in *CLIENT_PTR = (struct sockaddr_in *)&CLIENT_ADDR;
-    struct in_addr IP_ADDR = CLIENT_PTR->sin_addr;
-    char str[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &IP_ADDR, str, INET_ADDRSTRLEN);
-    
-    if (!check_ip_allowed(str)) {
-        LOG_INFO("Connection denied for IP: %s (IP ACL block)", str);
-        close(CLIENT_SOCKET_ID);
-        CONNECTED_SOCKET_ID[ITERATOR] = 0;
-        continue;
-    }
-    
-    printf("Client is connected via Port number: %d and IP address: %s\n",
-           ntohs(CLIENT_ADDR.sin_port), str);
+     // Extract client IP and port from CLIENT_ADDR (sockaddr_storage)
+     char ipstr[INET6_ADDRSTRLEN] = "UNKNOWN";
+     uint16_t port = 0;
+     if (CLIENT_ADDR.ss_family == AF_INET) {
+         struct sockaddr_in *s = (struct sockaddr_in *)&CLIENT_ADDR;
+         inet_ntop(AF_INET, &(s->sin_addr), ipstr, sizeof(ipstr));
+         port = ntohs(s->sin_port);
+     } else if (CLIENT_ADDR.ss_family == AF_INET6) {
+         struct sockaddr_in6 *s = (struct sockaddr_in6 *)&CLIENT_ADDR;
+         inet_ntop(AF_INET6, &(s->sin6_addr), ipstr, sizeof(ipstr));
+         port = ntohs(s->sin6_port);
+     }
+     
 
-    pthread_create(&THREAD_ID[ITERATOR], NULL, THREAD_ROUTINE,
-                   (void *)&CONNECTED_SOCKET_ID[ITERATOR]);
-    ITERATOR += 1;
-  }
+     if (!check_ip_allowed(ipstr)) {
+         LOG_INFO("Connection denied for IP: %s (IP ACL block)", ipstr);
+         close(CLIENT_SOCKET_ID);
+         CONNECTED_SOCKET_ID[ITERATOR] = 0;
+         continue;
+     }
+     
+     printf("Client is connected via Port number: %d and IP address: %s\n",
+            port, ipstr);
+
+     pthread_create(&THREAD_ID[ITERATOR], NULL, THREAD_ROUTINE,
+                    (void *)&CONNECTED_SOCKET_ID[ITERATOR]);
+     ITERATOR += 1;
+   }
   close(PROXY_SOCKET_ID);
   CleanupOpenSSL();
   free(THREAD_ID);
   free(CONNECTED_SOCKET_ID);
+  filter_cleanup();
   return 0;
 }

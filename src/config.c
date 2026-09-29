@@ -1,4 +1,5 @@
 #include "config.h"
+#include "filter.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +44,8 @@ void config_init_defaults(ProxyConfig *cfg) {
     cfg->blocklist_file[0] = '\0';
     cfg->allow_ip_file[0] = '\0';
     cfg->deny_ip_file[0] = '\0';
+    cfg->url_blocklist_file[0] = '\0';
+    cfg->block_page_file[0] = '\0';
     
     /* Logging */
     strncpy(cfg->log_file, DEFAULT_LOG_FILE, sizeof(cfg->log_file) - 1);
@@ -190,6 +193,12 @@ int config_load_file(ProxyConfig *cfg, const char *path) {
             } else if (strcmp(key, "deny_ip_file") == 0) {
                 strncpy(cfg->deny_ip_file, value, sizeof(cfg->deny_ip_file) - 1);
                 cfg->deny_ip_file[sizeof(cfg->deny_ip_file) - 1] = '\0';
+            } else if (strcmp(key, "url_blocklist_file") == 0) {
+                strncpy(cfg->url_blocklist_file, value, sizeof(cfg->url_blocklist_file) - 1);
+                cfg->url_blocklist_file[sizeof(cfg->url_blocklist_file) - 1] = '\0';
+            } else if (strcmp(key, "block_page_file") == 0) {
+                strncpy(cfg->block_page_file, value, sizeof(cfg->block_page_file) - 1);
+                cfg->block_page_file[sizeof(cfg->block_page_file) - 1] = '\0';
             } else if (strcmp(key, "log_file") == 0) {
                 strncpy(cfg->log_file, value, sizeof(cfg->log_file) - 1);
                 cfg->log_file[sizeof(cfg->log_file) - 1] = '\0';
@@ -822,6 +831,11 @@ static void *hot_reload_thread(void *arg) {
                 g_config.rate_limit_burst = parsed_cfg.rate_limit_burst;
                 g_config.bandwidth_limit_kbps = parsed_cfg.bandwidth_limit_kbps;
                 g_config.enable_filter = parsed_cfg.enable_filter;
+                strncpy(g_config.blocklist_file, parsed_cfg.blocklist_file, sizeof(g_config.blocklist_file));
+                strncpy(g_config.allow_ip_file, parsed_cfg.allow_ip_file, sizeof(g_config.allow_ip_file));
+                strncpy(g_config.deny_ip_file, parsed_cfg.deny_ip_file, sizeof(g_config.deny_ip_file));
+                strncpy(g_config.url_blocklist_file, parsed_cfg.url_blocklist_file, sizeof(g_config.url_blocklist_file));
+                strncpy(g_config.block_page_file, parsed_cfg.block_page_file, sizeof(g_config.block_page_file));
                 strncpy(g_config.log_file, parsed_cfg.log_file, sizeof(g_config.log_file));
                 
                 // Update logger level runtime
@@ -831,6 +845,8 @@ static void *hot_reload_thread(void *arg) {
                 else if (!strcmp(g_config.log_level, "ERROR")) l_enum = LOG_LEVEL_ERROR;
                 else if (!strcmp(g_config.log_level, "CRITICAL")) l_enum = LOG_LEVEL_CRITICAL;
                 logger_set_level(l_enum);
+                
+                filter_reload();
                 
                 LOG_INFO("Hot-reload completed.");
             }

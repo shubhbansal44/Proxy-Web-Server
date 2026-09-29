@@ -15,6 +15,9 @@ void metrics_init(void) {
     g_metrics.http2_requests_total = 0;
     g_metrics.http2_bytes_transferred = 0;
     g_metrics.http2_active_connections = 0;
+    g_metrics.ipv6_requests_total = 0;
+    g_metrics.ipv6_bytes_transferred = 0;
+    g_metrics.ipv6_active_connections = 0;
     pthread_mutex_init(&g_metrics.lock, NULL);
 }
 
@@ -102,6 +105,32 @@ void metrics_decrement_http2_active_connections(void) {
     pthread_mutex_unlock(&g_metrics.lock);
 }
 
+void metrics_increment_ipv6_requests(void) {
+    pthread_mutex_lock(&g_metrics.lock);
+    g_metrics.ipv6_requests_total++;
+    pthread_mutex_unlock(&g_metrics.lock);
+}
+
+void metrics_add_ipv6_bytes(size_t bytes) {
+    pthread_mutex_lock(&g_metrics.lock);
+    g_metrics.ipv6_bytes_transferred += bytes;
+    pthread_mutex_unlock(&g_metrics.lock);
+}
+
+void metrics_increment_ipv6_active_connections(void) {
+    pthread_mutex_lock(&g_metrics.lock);
+    g_metrics.ipv6_active_connections++;
+    pthread_mutex_unlock(&g_metrics.lock);
+}
+
+void metrics_decrement_ipv6_active_connections(void) {
+    pthread_mutex_lock(&g_metrics.lock);
+    if (g_metrics.ipv6_active_connections > 0) {
+        g_metrics.ipv6_active_connections--;
+    }
+    pthread_mutex_unlock(&g_metrics.lock);
+}
+
 char* metrics_export_prometheus(void) {
     // Need approx 2048 bytes
     char* buf = (char*)malloc(2048);
@@ -138,7 +167,16 @@ char* metrics_export_prometheus(void) {
         "proxy_http2_bytes_transferred %lu\n"
         "# HELP proxy_http2_active_connections Current number of active HTTP/2 connections\n"
         "# TYPE proxy_http2_active_connections gauge\n"
-        "proxy_http2_active_connections %d\n",
+        "proxy_http2_active_connections %d\n"
+        "# HELP proxy_ipv6_requests_total Total number of IPv6 requests\n"
+        "# TYPE proxy_ipv6_requests_total counter\n"
+        "proxy_ipv6_requests_total %lu\n"
+        "# HELP proxy_ipv6_bytes_transferred Total IPv6 bytes transferred\n"
+        "# TYPE proxy_ipv6_bytes_transferred counter\n"
+        "proxy_ipv6_bytes_transferred %lu\n"
+        "# HELP proxy_ipv6_active_connections Current number of active IPv6 connections\n"
+        "# TYPE proxy_ipv6_active_connections gauge\n"
+        "proxy_ipv6_active_connections %d\n",
         (unsigned long)g_metrics.requests_total,
         (unsigned long)g_metrics.requests_success,
         (unsigned long)g_metrics.requests_error,
@@ -148,7 +186,10 @@ char* metrics_export_prometheus(void) {
         g_metrics.active_connections,
         (unsigned long)g_metrics.http2_requests_total,
         (unsigned long)g_metrics.http2_bytes_transferred,
-        g_metrics.http2_active_connections);
+        g_metrics.http2_active_connections,
+        (unsigned long)g_metrics.ipv6_requests_total,
+        (unsigned long)g_metrics.ipv6_bytes_transferred,
+        g_metrics.ipv6_active_connections);
     pthread_mutex_unlock(&g_metrics.lock);
     
     return buf;

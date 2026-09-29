@@ -23,9 +23,14 @@ typedef struct {
     uint64_t http2_requests_total;
     uint64_t http2_bytes_transferred;
     
+    // IPv6 metrics
+    uint64_t ipv6_requests_total;
+    uint64_t ipv6_bytes_transferred;
+    
     // Gauges
     int32_t active_connections;
     int32_t http2_active_connections;
+    int32_t ipv6_active_connections;
     
     // Mutex
     pthread_mutex_t lock;
@@ -50,6 +55,12 @@ void metrics_decrement_http2_active_connections(void);
 
 // Prometheus format export
 char* metrics_export_prometheus(void);
+
+// IPv6 Specific Metrics
+void metrics_increment_ipv6_requests(void);
+void metrics_add_ipv6_bytes(size_t bytes);
+void metrics_increment_ipv6_active_connections(void);
+void metrics_decrement_ipv6_active_connections(void);
 
 #ifdef __cplusplus
 }

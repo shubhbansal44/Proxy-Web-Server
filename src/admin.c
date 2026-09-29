@@ -90,12 +90,23 @@ static void handle_admin_request(int client_sock) {
 
 static void* admin_thread_func(void* arg) {
     while (g_admin_running) {
-        struct sockaddr_in client_addr;
+        struct sockaddr_storage client_addr;
         socklen_t client_len = sizeof(client_addr);
         int client_sock = accept(g_admin_socket, (struct sockaddr*)&client_addr, &client_len);
         
         if (client_sock >= 0) {
+            struct sockaddr_storage* addr = (struct sockaddr_storage*)&client_addr;
+            if (addr->ss_family == AF_INET6) {
+                metrics_increment_ipv6_active_connections();
+            }
+            metrics_increment_active_connections();
+
             handle_admin_request(client_sock);
+
+            if (addr->ss_family == AF_INET6) {
+                metrics_decrement_ipv6_active_connections();
+            }
+            metrics_decrement_active_connections();
         }
     }
     return NULL;
@@ -104,7 +115,8 @@ static void* admin_thread_func(void* arg) {
 bool admin_server_start(const AdminConfig* config) {
     if (!config || !config->enabled) return false;
     
-    g_admin_socket = socket(AF_INET, SOCK_STREAM, 0);
+    int family = g_config.enable_ipv6 ? AF_INET6 : AF_INET;
+    g_admin_socket = socket(family, SOCK_STREAM, 0);
     if (g_admin_socket < 0) {
         LOG_ERROR("Failed to create admin socket");
         return false;
@@ -113,13 +125,30 @@ bool admin_server_start(const AdminConfig* config) {
     int reuse = 1;
     setsockopt(g_admin_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(config->port);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
+    if (family == AF_INET6) {
+        int v6only = 0;
+        setsockopt(g_admin_socket, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+    }
     
-    if (bind(g_admin_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    struct sockaddr_storage server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    socklen_t addr_len;
+    
+    if (family == AF_INET6) {
+        struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)&server_addr;
+        addr6->sin6_family = AF_INET6;
+        addr6->sin6_port = htons(config->port);
+        addr6->sin6_addr = in6addr_any;
+        addr_len = sizeof(struct sockaddr_in6);
+    } else {
+        struct sockaddr_in *addr4 = (struct sockaddr_in *)&server_addr;
+        addr4->sin_family = AF_INET;
+        addr4->sin_port = htons(config->port);
+        addr4->sin_addr.s_addr = INADDR_ANY;
+        addr_len = sizeof(struct sockaddr_in);
+    }
+    
+    if (bind(g_admin_socket, (struct sockaddr*)&server_addr, addr_len) < 0) {
         LOG_ERROR("Failed to bind admin server to port %d", config->port);
         close(g_admin_socket);
         return false;

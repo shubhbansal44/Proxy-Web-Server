@@ -437,22 +437,49 @@ ParsedRequest_parse(struct ParsedRequest * parse, const char *buf,
 
 
      if (!strcmp(parse->method, "CONNECT")) {
-          // For CONNECT, full_addr is "host:port"
-          parse->host = strtok_r(full_addr, ":", &saveptr);
-          char *port = strtok_r(NULL, "", &saveptr);
-          if (parse->host == NULL) {
-              debug("invalid CONNECT request line, missing host\n");
-              free(tmp_buf);
-              free(parse->buf);
-              parse->buf = NULL;
-              return -1;
-          }
-          if (port != NULL && strlen(port) > 0) {
-              parse->port = (char *)malloc(strlen(port) + 1);
-              strcpy(parse->port, port);
+          // For CONNECT, full_addr may be "[IPv6]:port", "hostname:port", or "hostname"
+          if (full_addr[0] == '[') {
+              // IPv6 address with brackets
+              char *end_bracket = strchr(full_addr+1, ']');
+              if (end_bracket == NULL) {
+                  debug("invalid CONNECT request line, missing closing bracket for IPv6 address\n");
+                  free(tmp_buf);
+                  free(parse->buf);
+                  parse->buf = NULL;
+                  return -1;
+              }
+              *end_bracket = '\0';   // terminate the host part (without the brackets)
+              parse->host = (char *)malloc(strlen(full_addr+1) + 1);
+              strcpy(parse->host, full_addr+1);
+              // Now look for port after the bracket
+              char *port_ptr = end_bracket+1;
+              if (*port_ptr == ':') {
+                  port_ptr++;   // skip colon
+                  parse->port = (char *)malloc(strlen(port_ptr) + 1);
+                  strcpy(parse->port, port_ptr);
+              } else {
+                  // no port specified, default to 443
+                  parse->port = (char *)malloc(4);
+                  strcpy(parse->port, "443");
+              }
           } else {
-              parse->port = (char *)malloc(4);
-              strcpy(parse->port, "443");
+              // IPv4 hostname or plain hostname:port
+              parse->host = strtok_r(full_addr, ":", &saveptr);
+              char *port = strtok_r(NULL, "", &saveptr);
+              if (parse->host == NULL) {
+                  debug("invalid CONNECT request line, missing host\n");
+                  free(tmp_buf);
+                  free(parse->buf);
+                  parse->buf = NULL;
+                  return -1;
+              }
+              if (port != NULL && strlen(port) > 0) {
+                  parse->port = (char *)malloc(strlen(port) + 1);
+                  strcpy(parse->port, port);
+              } else {
+                  parse->port = (char *)malloc(4);
+                  strcpy(parse->port, "443");
+              }
           }
           parse->path = (char *)malloc(2);
           strcpy(parse->path, "/");
@@ -494,23 +521,40 @@ ParsedRequest_parse(struct ParsedRequest * parse, const char *buf,
                  strcpy(parse->path, path_start);
              }
              
-             char *colon = strchr(parse->host, ':');
-             if (colon != NULL) {
-                 *colon = '\0';
-                 char *port_str = colon + 1;
-                 parse->port = (char *)malloc(strlen(port_str) + 1);
-                 strcpy(parse->port, port_str);
-                 
-                 if (strlen(parse->port) > 0) {
-                     int port = strtol(parse->port, (char **)NULL, 10);
-                     if (port == 0 && errno == EINVAL) {
-                          debug("invalid request line, bad port: %s\n", parse->port);
-                          free(tmp_buf);
-                          free(parse->buf);
-                          free(parse->path);
-                          parse->buf = NULL;
-                          parse->path = NULL;
-                          return -1;
+             if (parse->host[0] == '[') {
+                 char *end_bracket = strchr(parse->host, ']');
+                 if (end_bracket != NULL) {
+                     char *colon = strchr(end_bracket, ':');
+                     if (colon != NULL) {
+                         *colon = '\0';
+                         char *port_str = colon + 1;
+                         parse->port = (char *)malloc(strlen(port_str) + 1);
+                         strcpy(parse->port, port_str);
+                     }
+                     // Shift the string left by 1 to overwrite '[' and truncate at ']'
+                     int addr_len = end_bracket - parse->host - 1;
+                     memmove(parse->host, parse->host + 1, addr_len);
+                     parse->host[addr_len] = '\0';
+                 }
+             } else {
+                 char *colon = strchr(parse->host, ':');
+                 if (colon != NULL) {
+                     *colon = '\0';
+                     char *port_str = colon + 1;
+                     parse->port = (char *)malloc(strlen(port_str) + 1);
+                     strcpy(parse->port, port_str);
+                     
+                     if (strlen(parse->port) > 0) {
+                         int port = strtol(parse->port, (char **)NULL, 10);
+                         if (port == 0 && errno == EINVAL) {
+                              debug("invalid request line, bad port: %s\n", parse->port);
+                              free(tmp_buf);
+                              free(parse->buf);
+                              free(parse->path);
+                              parse->buf = NULL;
+                              parse->path = NULL;
+                              return -1;
+                         }
                      }
                  }
              }
@@ -556,19 +600,38 @@ ParsedRequest_parse(struct ParsedRequest * parse, const char *buf,
          struct ParsedHeader *host_hdr = ParsedHeader_get(parse, "Host");
          if (host_hdr != NULL && host_hdr->value != NULL) {
              char *host_val = host_hdr->value;
-             char *colon = strchr(host_val, ':');
-             if (colon != NULL) {
-                 int host_len = colon - host_val;
-                 parse->host = (char *)malloc(host_len + 1);
-                 strncpy(parse->host, host_val, host_len);
-                 parse->host[host_len] = '\0';
-                 
-                 char *port_str = colon + 1;
-                 parse->port = (char *)malloc(strlen(port_str) + 1);
-                 strcpy(parse->port, port_str);
+             if (host_val[0] == '[') {
+                 char *end_bracket = strchr(host_val, ']');
+                 if (end_bracket != NULL) {
+                     char *colon = strchr(end_bracket, ':');
+                     if (colon != NULL) {
+                         char *port_str = colon + 1;
+                         parse->port = (char *)malloc(strlen(port_str) + 1);
+                         strcpy(parse->port, port_str);
+                     }
+                     int host_len = end_bracket - host_val - 1;
+                     parse->host = (char *)malloc(host_len + 1);
+                     strncpy(parse->host, host_val + 1, host_len);
+                     parse->host[host_len] = '\0';
+                 } else {
+                     parse->host = (char *)malloc(strlen(host_val) + 1);
+                     strcpy(parse->host, host_val);
+                 }
              } else {
-                 parse->host = (char *)malloc(strlen(host_val) + 1);
-                 strcpy(parse->host, host_val);
+                 char *colon = strchr(host_val, ':');
+                 if (colon != NULL) {
+                     int host_len = colon - host_val;
+                     parse->host = (char *)malloc(host_len + 1);
+                     strncpy(parse->host, host_val, host_len);
+                     parse->host[host_len] = '\0';
+                     
+                     char *port_str = colon + 1;
+                     parse->port = (char *)malloc(strlen(port_str) + 1);
+                     strcpy(parse->port, port_str);
+                 } else {
+                     parse->host = (char *)malloc(strlen(host_val) + 1);
+                     strcpy(parse->host, host_val);
+                 }
              }
          } else {
              debug("invalid request line, missing host in relative URI\n");

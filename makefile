@@ -8,7 +8,7 @@ SRC_DIR=src
 
 all: proxy
 
-proxy: $(SRC_DIR)/Main.c $(SRC_DIR)/config.c $(SRC_DIR)/cache.c $(SRC_DIR)/proxy_parse.c $(SRC_DIR)/auth.c $(SRC_DIR)/logger.c $(SRC_DIR)/metrics.c $(SRC_DIR)/admin.c $(SRC_DIR)/tls_tunnel.c $(SRC_DIR)/http2.c $(SRC_DIR)/http3.c
+proxy: $(SRC_DIR)/Main.c $(SRC_DIR)/config.c $(SRC_DIR)/cache.c $(SRC_DIR)/proxy_parse.c $(SRC_DIR)/auth.c $(SRC_DIR)/logger.c $(SRC_DIR)/metrics.c $(SRC_DIR)/admin.c $(SRC_DIR)/tls_tunnel.c $(SRC_DIR)/http2.c $(SRC_DIR)/http3.c $(SRC_DIR)/filter.c
 	$(CC) $(CFLAGS) -o proxy_parse.o -c $(SRC_DIR)/proxy_parse.c
 	$(CC) $(CFLAGS) -o cache.o -c $(SRC_DIR)/cache.c
 	$(CC) $(CFLAGS) -o config.o -c $(SRC_DIR)/config.c -I$(SRC_DIR)
@@ -19,8 +19,9 @@ proxy: $(SRC_DIR)/Main.c $(SRC_DIR)/config.c $(SRC_DIR)/cache.c $(SRC_DIR)/proxy
 	$(CC) $(CFLAGS) -o tls_tunnel.o -c $(SRC_DIR)/tls_tunnel.c -I$(SRC_DIR) -I$(QUICHE_DIR)/quiche/include
 	$(CC) $(CFLAGS) -o http2.o -c $(SRC_DIR)/http2.c -I$(SRC_DIR)
 	$(CC) $(CFLAGS) -o http3.o -c $(SRC_DIR)/http3.c -I$(SRC_DIR) -I$(QUICHE_DIR)/quiche/include
+	$(CC) $(CFLAGS) -o filter.o -c $(SRC_DIR)/filter.c -I$(SRC_DIR)
 	$(CC) $(CFLAGS) -o proxy.o -c $(SRC_DIR)/Main.c -I$(SRC_DIR)
-	$(CC) $(CFLAGS) -o proxy proxy_parse.o config.o cache.o auth.o logger.o metrics.o admin.o tls_tunnel.o http2.o http3.o proxy.o -lssl -lcrypto $(HTTP2_LIBS) $(QUICHE_LIBS)
+	$(CC) $(CFLAGS) -o proxy proxy_parse.o config.o cache.o auth.o logger.o metrics.o admin.o tls_tunnel.o http2.o http3.o filter.o proxy.o -lssl -lcrypto $(HTTP2_LIBS) $(QUICHE_LIBS)
 
 test: proxy
 	mkdir -p tests/bin
@@ -47,21 +48,22 @@ coverage: clean
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tls_tunnel.o -c $(SRC_DIR)/tls_tunnel.c -I$(SRC_DIR) -I$(QUICHE_DIR)/quiche/include
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o http2.o -c $(SRC_DIR)/http2.c -I$(SRC_DIR)
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o http3.o -c $(SRC_DIR)/http3.c -I$(SRC_DIR) -I$(QUICHE_DIR)/quiche/include
+	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o filter.o -c $(SRC_DIR)/filter.c -I$(SRC_DIR)
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tests/bin/test_proxy_parse proxy_parse.o config.o cache.o logger.o tests/test_proxy_parse.c -I$(SRC_DIR) -I.
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tests/bin/test_config proxy_parse.o config.o cache.o logger.o tests/test_config.c -I$(SRC_DIR) -I.
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tests/bin/test_cache cache.o config.o logger.o tests/test_cache.c -I$(SRC_DIR) -I.
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o proxy.o -c $(SRC_DIR)/Main.c -I$(SRC_DIR)
-	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o proxy proxy_parse.o config.o cache.o auth.o logger.o metrics.o admin.o tls_tunnel.o http2.o http3.o proxy.o -lssl -lcrypto $(HTTP2_LIBS) $(QUICHE_LIBS)
+	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o proxy proxy_parse.o config.o cache.o auth.o logger.o metrics.o admin.o tls_tunnel.o http2.o http3.o filter.o proxy.o -lssl -lcrypto $(HTTP2_LIBS) $(QUICHE_LIBS)
 	$(CC) $(CFLAGS) $(COVERAGE_FLAGS) -o tests/bin/test_integration tests/test_integration.c mock_server.o proxy_parse.o config.o cache.o logger.o -I$(SRC_DIR) -I.
 	./tests/run_tests.sh
-	gcov $(SRC_DIR)/proxy_parse.c $(SRC_DIR)/config.c $(SRC_DIR)/cache.c $(SRC_DIR)/auth.c $(SRC_DIR)/logger.c $(SRC_DIR)/metrics.c $(SRC_DIR)/admin.c
+	gcov $(SRC_DIR)/proxy_parse.c $(SRC_DIR)/config.c $(SRC_DIR)/cache.c $(SRC_DIR)/auth.c $(SRC_DIR)/logger.c $(SRC_DIR)/metrics.c $(SRC_DIR)/admin.c $(SRC_DIR)/filter.c
 
 clean:
 	rm -f proxy *.o *.gcno *.gcda *.gcov
 	rm -rf tests/bin
 
 tar:
-	tar -cvzf ass1.tgz $(SRC_DIR)/Main.c README makefile $(SRC_DIR)/proxy_parse.c $(SRC_DIR)/proxy_parse.h $(SRC_DIR)/cache.c $(SRC_DIR)/cache.h $(SRC_DIR)/config.c $(SRC_DIR)/config.h $(SRC_DIR)/auth.c $(SRC_DIR)/auth.h $(SRC_DIR)/logger.c $(SRC_DIR)/logger.h $(SRC_DIR)/metrics.c $(SRC_DIR)/metrics.h $(SRC_DIR)/admin.c $(SRC_DIR)/admin.h
+	tar -cvzf ass1.tgz $(SRC_DIR)/Main.c README makefile $(SRC_DIR)/proxy_parse.c $(SRC_DIR)/proxy_parse.h $(SRC_DIR)/cache.c $(SRC_DIR)/cache.h $(SRC_DIR)/config.c $(SRC_DIR)/config.h $(SRC_DIR)/auth.c $(SRC_DIR)/auth.h $(SRC_DIR)/logger.c $(SRC_DIR)/logger.h $(SRC_DIR)/metrics.c $(SRC_DIR)/metrics.h $(SRC_DIR)/admin.c $(SRC_DIR)/admin.h $(SRC_DIR)/filter.c $(SRC_DIR)/filter.h
 
 
 
